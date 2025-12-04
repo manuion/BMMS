@@ -1,0 +1,208 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Users - can be Admin, Organiser (in committees), or Member
+model User {
+  id        String   @id @default(uuid())
+  email     String   @unique
+  password  String
+  name      String
+  phone     String?
+  isAdmin   Boolean  @default(false)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  committeeMemberships CommitteeMember[]
+  meetingResponses     MeetingResponse[]
+  documentsUploaded    Document[]
+  meetingsCreated      Meeting[]
+  notificationsSent    Notification[]    @relation("NotificationSender")
+  notificationsReceived Notification[]   @relation("NotificationReceiver")
+  deviceTokens         DeviceToken[]
+
+  @@map("users")
+}
+
+// Committees - e.g., Product A Committee, Product B Committee
+model Committee {
+  id          String   @id @default(uuid())
+  name        String
+  description String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  members  CommitteeMember[]
+  meetings Meeting[]
+
+  @@map("committees")
+}
+
+// Junction table: User <-> Committee with role
+model CommitteeMember {
+  id          String   @id @default(uuid())
+  userId      String
+  committeeId String
+  role        String   @default("member") // 'organiser' or 'member'
+  joinedAt    DateTime @default(now())
+
+  // Relations
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  committee Committee @relation(fields: [committeeId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, committeeId])
+  @@map("committee_members")
+}
+
+// Meetings
+model Meeting {
+  id          String   @id @default(uuid())
+  title       String
+  description String?
+  committeeId String
+  scheduledAt DateTime
+  endTime     DateTime?
+  location    String
+  status      String   @default("scheduled") // draft, scheduled, rescheduled, cancelled, completed
+  createdBy   String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  committee Committee         @relation(fields: [committeeId], references: [id], onDelete: Cascade)
+  creator   User              @relation(fields: [createdBy], references: [id])
+  documents Document[]
+  folders   DocumentFolder[]
+  responses MeetingResponse[]
+  notifications Notification[]
+
+  @@map("meetings")
+}
+
+// Member's response to meeting invitation
+model MeetingResponse {
+  id          String    @id @default(uuid())
+  meetingId   String
+  userId      String
+  status      String    @default("pending") // pending, accepted, declined
+  respondedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  // Relations
+  meeting Meeting @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([meetingId, userId])
+  @@map("meeting_responses")
+}
+
+// Document Folders (Hierarchical folder structure for agenda documents)
+model DocumentFolder {
+  id        String   @id @default(uuid())
+  meetingId String
+  name      String
+  parentId  String?  // null = root level folder
+  path      String   // Full path like "folder1/subfolder2" for quick display
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+
+  // Relations
+  meeting   Meeting          @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  parent    DocumentFolder?  @relation("FolderHierarchy", fields: [parentId], references: [id], onDelete: Cascade)
+  children  DocumentFolder[] @relation("FolderHierarchy")
+  documents Document[]
+
+  @@map("document_folders")
+}
+
+// Documents (Agenda documents for meetings)
+model Document {
+  id        String   @id @default(uuid())
+  meetingId String
+  folderId  String?  // null = root level document (not in any folder)
+  name      String
+  fileName  String   // Original file name
+  fileSize  Int      // Size in bytes
+  mimeType  String
+  storageKey String  // Key in cloud storage (R2/S3)
+  path      String   @default("") // Full path like "folder1/subfolder2/file.pdf"
+  sortOrder Int      @default(0)
+  uploadedBy String
+  createdAt DateTime @default(now())
+
+  // Relations
+  meeting  Meeting          @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  folder   DocumentFolder?  @relation(fields: [folderId], references: [id], onDelete: Cascade)
+  uploader User             @relation(fields: [uploadedBy], references: [id])
+  uploadProgress DocumentUpload?
+
+  @@map("documents")
+}
+
+// Track multipart upload progress for resumable uploads
+model DocumentUpload {
+  id                String   @id @default(uuid())
+  documentId        String   @unique
+  totalChunks       Int
+  uploadedChunks    Int      @default(0)
+  chunkDetails      Json     @default("{}") // { "1": true, "2": true, "3": false }
+  multipartUploadId String?  // S3/R2 multipart upload ID
+  status            String   @default("pending") // pending, uploading, completed, failed, expired
+  expiresAt         DateTime
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  // Relations
+  document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@map("document_uploads")
+}
+
+// Notifications
+model Notification {
+  id        String    @id @default(uuid())
+  type      String    // meeting_invite, meeting_reminder, meeting_updated, document_added, etc.
+  title     String
+  body      String
+  meetingId String?
+  senderId  String?
+  receiverId String
+  isRead    Boolean   @default(false)
+  readAt    DateTime?
+  data      Json?     // Additional data for the notification (e.g., navigation params)
+  createdAt DateTime  @default(now())
+
+  // Relations
+  meeting  Meeting? @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  sender   User?    @relation("NotificationSender", fields: [senderId], references: [id])
+  receiver User     @relation("NotificationReceiver", fields: [receiverId], references: [id], onDelete: Cascade)
+
+  @@map("notifications")
+}
+
+// Device tokens for push notifications
+model DeviceToken {
+  id        String   @id @default(uuid())
+  userId    String
+  token     String   @unique
+  platform  String   // 'ios' or 'android'
+  deviceId  String?  // Unique device identifier
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("device_tokens")
+}

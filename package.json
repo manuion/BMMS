@@ -1,0 +1,28 @@
+{
+  "name": "bmms",
+  "version": "1.0.0",
+  "description": "BMMS - Board Members Meeting System - Monorepo",
+  "private": true,
+  "scripts": {
+    "dev:api": "pnpm --filter @bmms/api dev",
+    "dev:web": "pnpm --filter @bmms/web dev",
+    "dev:mobile": "pnpm --filter @bmms/mobile start",
+    "dev": "pnpm run dev:api & pnpm run dev:web",
+    "build:api": "pnpm --filter @bmms/api build",
+    "build:web": "pnpm --filter @bmms/web build",
+    "db:migrate": "pnpm --filter @bmms/api db:migrate",
+    "db:generate": "pnpm --filter @bmms/api db:generate",
+    "db:studio": "pnpm --filter @bmms/api db:studio"
+  },
+  "keywords": [
+    "bmms",
+    "meeting",
+    "board-members"
+  ],
+  "author": "",
+  "license": "ISC",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "packageManager": "pnpm@9.14.2+sha1.5202b50ab92394b3c922d2e293f196e2df6d441b"
+}

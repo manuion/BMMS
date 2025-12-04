@@ -1,0 +1,9 @@
+{
+  "name": "@bmms/shared",
+  "version": "1.0.0",
+  "description": "Shared constants and utilities for BMMS",
+  "main": "index.js",
+  "scripts": {},
+  "keywords": [],
+  "license": "ISC"
+}
