@@ -1,5 +1,21 @@
 require('dotenv').config();
 
+// Determine storage mode: 'local' for development, 's3' for production
+const getStorageMode = () => {
+  // Explicitly set via env
+  if (process.env.STORAGE_MODE) {
+    return process.env.STORAGE_MODE;
+  }
+  // Auto-detect: use local if no S3/R2 credentials are configured
+  const hasS3Credentials = process.env.R2_ACCESS_KEY_ID || process.env.AWS_ACCESS_KEY_ID;
+  const hasBucket = process.env.R2_BUCKET_NAME || process.env.S3_BUCKET_NAME;
+
+  if (hasS3Credentials && hasBucket) {
+    return 's3';
+  }
+  return 'local';
+};
+
 const config = {
   // Server
   port: process.env.PORT || 3001,
@@ -12,6 +28,9 @@ const config = {
   },
 
   // Database (handled by Prisma via DATABASE_URL)
+
+  // Storage mode: 'local' or 's3'
+  storageMode: getStorageMode(),
 
   // Cloud Storage (R2/S3)
   storage: {

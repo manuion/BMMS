@@ -51,6 +51,9 @@ mobile_src_backup/
 apps/api/prisma/*.db
 apps/api/prisma/*.db-journal
 
+# Local file uploads (development)
+apps/api/uploads/
+
 # Misc
 *.pem
 .cache/

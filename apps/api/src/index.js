@@ -11,6 +11,7 @@ const committeeRoutes = require('./routes/committee.routes');
 const meetingRoutes = require('./routes/meeting.routes');
 const documentRoutes = require('./routes/document.routes');
 const notificationRoutes = require('./routes/notification.routes');
+const storageRoutes = require('./routes/storage.routes');
 
 // Import middleware
 const { errorHandler } = require('./middleware/errorHandler');
@@ -27,6 +28,7 @@ app.use(cors({
     'http://localhost:3000', // Alternative
   ],
   credentials: true,
+  exposedHeaders: ['ETag'], // Expose ETag for local storage uploads
 }));
 
 // Logging
@@ -52,6 +54,7 @@ app.use('/api/committees', committeeRoutes);
 app.use('/api/meetings', meetingRoutes);
 app.use('/api/documents', documentRoutes);
 app.use('/api/notifications', notificationRoutes);
+app.use('/api/storage', storageRoutes);
 
 // 404 handler
 app.use((req, res) => {

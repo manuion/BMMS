@@ -347,13 +347,28 @@ export default function FolderTreeUpload({ meetingId, onUploadComplete, onCancel
       collectFolders(treeData);
 
       // Create folder structure first (if any folders exist)
+      // Sort by depth (parents first) and create sequentially
       let folderMap = {};
       if (folders.length > 0) {
-        const treeResponse = await documentsApi.uploadTree({
-          meetingId,
-          folders,
+        const sortedFolders = [...folders].sort((a, b) => {
+          const depthA = (a.path.match(/\//g) || []).length;
+          const depthB = (b.path.match(/\//g) || []).length;
+          return depthA - depthB;
         });
-        folderMap = treeResponse.folderMap || {};
+
+        for (const folder of sortedFolders) {
+          try {
+            const parentId = folder.parentPath ? folderMap[folder.parentPath] : null;
+            const response = await documentsApi.createFolder({
+              meetingId,
+              name: folder.name,
+              parentId,
+            });
+            folderMap[folder.path] = response.data.id;
+          } catch (err) {
+            console.error(`Failed to create folder ${folder.path}:`, err);
+          }
+        }
       }
 
       // Upload each file
@@ -385,14 +400,6 @@ export default function FolderTreeUpload({ meetingId, onUploadComplete, onCancel
         current: allFiles.length,
         status: 'completed',
       }));
-
-      // Check if all files uploaded successfully
-      const completedCount = Object.values(fileStatuses).filter((s) => s === 'completed').length;
-      if (completedCount === allFiles.length) {
-        setTimeout(() => {
-          onUploadComplete?.();
-        }, 1000);
-      }
     } catch (err) {
       console.error('Upload error:', err);
       setError(err.message || 'Upload failed');
@@ -413,7 +420,11 @@ export default function FolderTreeUpload({ meetingId, onUploadComplete, onCancel
   const stats = treeData ? countItems(treeData) : null;
   const treeList = treeData ? treeToList(treeData) : [];
 
-  const getFileStatusIcon = (status) => {
+  const getFileStatusIcon = (status, isUploadComplete) => {
+    // If overall upload is complete and no specific error, show green check
+    if (isUploadComplete && status !== 'error') {
+      return <Check size={14} className="text-green-500" />;
+    }
     switch (status) {
       case 'uploading':
         return <Loader2 size={14} className="text-blue-500 animate-spin" />;
@@ -553,7 +564,7 @@ export default function FolderTreeUpload({ meetingId, onUploadComplete, onCancel
                     <span className="w-5" />
                     <FileText size={16} className="text-gray-400" />
                     <span className="flex-1 text-sm truncate">{item.name}</span>
-                    {getFileStatusIcon(item.status)}
+                    {getFileStatusIcon(item.status, uploadProgress.status === 'completed')}
                     <span className="text-xs text-gray-400">{formatFileSize(item.size)}</span>
                     {!uploading && (
                       <button

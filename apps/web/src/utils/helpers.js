@@ -1,4 +1,50 @@
 /**
+ * Format date to readable string
+ * @param {string|Date} date
+ * @returns {string}
+ */
+export const formatDate = (date) => {
+  if (!date) return '';
+  const d = new Date(date);
+  return d.toLocaleDateString('en-US', {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+  });
+};
+
+/**
+ * Format date with time
+ * @param {string|Date} date
+ * @returns {string}
+ */
+export const formatDateTime = (date) => {
+  if (!date) return '';
+  const d = new Date(date);
+  return d.toLocaleDateString('en-US', {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+};
+
+/**
+ * Format time only
+ * @param {string|Date} date
+ * @returns {string}
+ */
+export const formatTime = (date) => {
+  if (!date) return '';
+  const d = new Date(date);
+  return d.toLocaleTimeString('en-US', {
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+};
+
+/**
  * Format file size to human readable
  * @param {number} bytes
  * @returns {string}
