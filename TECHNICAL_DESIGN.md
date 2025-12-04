@@ -13,6 +13,11 @@
 10. [Web Application](#web-application)
 11. [Security Considerations](#security-considerations)
 12. [Deployment Architecture](#deployment-architecture)
+13. [Local Development Storage System](#13-local-development-storage-system)
+14. [Implementation Challenges & Solutions](#14-implementation-challenges--solutions)
+15. [Selective File Upload Feature](#15-selective-file-upload-feature)
+16. [Libraries & Dependencies Reference](#16-libraries--dependencies-reference)
+17. [Security Configuration Summary](#17-security-configuration-summary)
 
 ---
 
@@ -1273,5 +1278,654 @@ pnpm --filter web add react-router-dom
 
 ---
 
-*Document Version: 1.0*
+## 13. Local Development Storage System
+
+### Overview
+
+For local development without AWS S3/Cloudflare R2, BMMS implements a mock local storage system that mimics the behavior of cloud storage presigned URLs. This allows developers to test file upload/download functionality without cloud credentials.
+
+### Storage Mode Configuration
+
+The system automatically detects the storage mode based on environment variables:
+
+```javascript
+// config/index.js
+const getStorageMode = () => {
+  // Explicit mode setting takes priority
+  if (process.env.STORAGE_MODE) {
+    return process.env.STORAGE_MODE;
+  }
+  // Auto-detect based on credentials
+  const hasS3Credentials = process.env.R2_ACCESS_KEY_ID || process.env.AWS_ACCESS_KEY_ID;
+  const hasBucket = process.env.R2_BUCKET_NAME || process.env.S3_BUCKET_NAME;
+  if (hasS3Credentials && hasBucket) {
+    return 's3';
+  }
+  return 'local';
+};
+
+module.exports = {
+  storageMode: getStorageMode(),
+  // ... other config
+};
+```
+
+**Environment Variable:**
+```bash
+# .env
+STORAGE_MODE=local  # 'local' or 's3'
+```
+
+### Local Storage Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    LOCAL STORAGE FLOW                                │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│   Frontend                    API Server                    File     │
+│   (React)                    (Express)                    System     │
+│                                                                      │
+│  1. Request upload URL        │                              │      │
+│  ─────────────────────────────>                              │      │
+│                               │                              │      │
+│  2. Generate token + URL      │                              │      │
+│  <─────────────────────────────                              │      │
+│  URL: /api/storage/upload/:token                             │      │
+│                               │                              │      │
+│  3. PUT file to URL           │                              │      │
+│  ─────────────────────────────>                              │      │
+│                               │  4. Store file              │      │
+│                               │  ──────────────────────────>│      │
+│                               │                              │      │
+│                               │  uploads/meetings/...       │      │
+│                               │                              │      │
+│  5. Return ETag header        │                              │      │
+│  <─────────────────────────────                              │      │
+│                               │                              │      │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### Token-Based Presigned URL Emulation
+
+The local storage uses an in-memory Map to store presigned URL tokens:
+
+```javascript
+// services/localStorage.js
+const presignedUrls = new Map();
+
+const createPresignedToken = (key, contentType, extraData = {}) => {
+  const token = uuidv4();
+  presignedUrls.set(token, {
+    key,
+    contentType,
+    expiresAt: Date.now() + TOKEN_EXPIRY,
+    ...extraData,
+  });
+
+  // Auto-cleanup after expiry
+  setTimeout(() => {
+    presignedUrls.delete(token);
+  }, TOKEN_EXPIRY);
+
+  return token;
+};
+```
+
+**Token Data Structure:**
+| Field | Type | Description |
+|-------|------|-------------|
+| `key` | string | Storage path (e.g., `meetings/{id}/documents/{uuid}.pdf`) |
+| `contentType` | string | MIME type of the file |
+| `expiresAt` | number | Unix timestamp when token expires |
+| `fileName` | string | Original filename (for Content-Disposition) |
+| `partNumber` | number | For multipart uploads |
+| `uploadId` | string | For multipart uploads |
+
+### File Storage Directory Structure
+
+```
+apps/api/
+├── uploads/                    # Local file storage root
+│   └── meetings/
+│       └── {meetingId}/
+│           └── documents/
+│               ├── {uuid}.pdf
+│               ├── {uuid}.docx
+│               └── ...
+└── src/
+    └── services/
+        └── localStorage.js     # Local storage service
+```
+
+### Storage Routes
+
+```javascript
+// routes/storage.routes.js
+
+// File Upload
+router.put('/upload/:token', express.raw({ type: '*/*', limit: '60mb' }), async (req, res) => {
+  // Validate token
+  if (!localStorage.isValidToken(token)) {
+    throw new ApiError(401, 'INVALID_TOKEN', 'Invalid or expired upload token');
+  }
+  // Store file
+  const result = await localStorage.storePart(token, req.body);
+  // Return ETag like S3
+  res.set('ETag', `"${result.etag}"`);
+  res.status(200).send();
+});
+
+// File Download
+router.get('/download/:token', async (req, res) => {
+  const forceDownload = req.query.download === 'true';
+  const { data, contentType, fileName } = await localStorage.getFileForDownload(token);
+
+  res.set('Content-Type', contentType);
+  if (forceDownload && fileName) {
+    res.set('Content-Disposition', `attachment; filename="${encodeURIComponent(fileName)}"`);
+  } else if (fileName) {
+    res.set('Content-Disposition', `inline; filename="${encodeURIComponent(fileName)}"`);
+  }
+  res.send(data);
+});
+```
+
+---
+
+## 14. Implementation Challenges & Solutions
+
+### 14.1 CORS Configuration for File Uploads
+
+**Problem:** Cross-Origin Resource Sharing (CORS) errors when frontend (port 5173/5174) tried to upload files to API (port 3001).
+
+**Error Message:**
+```
+Access to fetch at 'http://localhost:3001/api/storage/upload/...' has been blocked by CORS policy
+```
+
+**Root Cause:**
+- Vite dev server runs on different port than API
+- File uploads via presigned URLs go directly to API (not through Vite proxy)
+- CORS was not configured to allow cross-origin requests
+
+**Solution:**
+```javascript
+// index.js
+app.use(cors({
+  origin: [
+    'http://localhost:5173',  // Vite default port
+    'http://localhost:5174',  // Vite alternate port
+    'http://localhost:3000',  // Alternative
+  ],
+  credentials: true,
+  exposedHeaders: ['ETag'],  // Expose ETag for upload confirmation
+}));
+```
+
+**Key Points:**
+- `exposedHeaders: ['ETag']` - Required for frontend to read ETag from upload response
+- Multiple origins for Vite port variations
+- `credentials: true` for authenticated requests
+
+---
+
+### 14.2 Helmet Security Policy for Cross-Origin Resources
+
+**Problem:** File uploads failing due to Helmet's default `Cross-Origin-Resource-Policy`.
+
+**Error Message:**
+```
+The Cross-Origin-Resource-Policy header has blocked this request
+```
+
+**Root Cause:** Helmet's default settings block cross-origin resource sharing.
+
+**Solution:**
+```javascript
+// index.js
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: 'cross-origin' },
+}));
+```
+
+---
+
+### 14.3 PDF Viewing in iFrame - Content Security Policy
+
+**Problem:** PDF files not displaying in iframe viewer, showing broken image icon.
+
+**Error Message:**
+```
+Framing 'http://localhost:3001/' violates the following Content Security Policy directive:
+"frame-ancestors 'self'". The request has been blocked.
+```
+
+**Root Cause:** Helmet's default Content Security Policy (CSP) sets `frame-ancestors 'self'`, which prevents embedding content in iframes from different origins.
+
+**Solution:**
+```javascript
+// index.js
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: 'cross-origin' },
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      frameAncestors: [
+        "'self'",
+        "http://localhost:5173",
+        "http://localhost:5174",
+        "http://localhost:3000"
+      ],
+    },
+  },
+  crossOriginEmbedderPolicy: false,
+}));
+```
+
+**Key Configuration:**
+| Directive | Value | Purpose |
+|-----------|-------|---------|
+| `frameAncestors` | Frontend URLs | Allow embedding in iframes from frontend |
+| `crossOriginEmbedderPolicy` | false | Allow loading resources from different origins |
+| `crossOriginResourcePolicy` | 'cross-origin' | Allow cross-origin resource sharing |
+
+---
+
+### 14.4 Token Invalidation After First Use
+
+**Problem:** PDF viewer showing blank because token was consumed when fetching preview URL.
+
+**Scenario:**
+1. Frontend calls API to get download URL
+2. API generates token and returns URL
+3. Frontend sets iframe `src` to the URL
+4. Browser requests the URL
+5. Server deletes token after first use
+6. Any subsequent request (iframe retry, download button) fails
+
+**Root Cause:** Token was being deleted in `getFileForDownload()` after first use:
+```javascript
+// Before - problematic
+const getFileForDownload = async (token) => {
+  // ... validation ...
+  presignedUrls.delete(token);  // Token deleted!
+  return { data, contentType };
+};
+```
+
+**Solution:** Let tokens expire naturally via setTimeout instead of immediate deletion:
+```javascript
+// After - fixed
+const getFileForDownload = async (token) => {
+  // ... validation ...
+  // Don't delete token - let it expire naturally via setTimeout
+  // This allows the URL to be used multiple times (iframe + download)
+  return { data, contentType, fileName };
+};
+```
+
+---
+
+### 14.5 PDF Download vs View Behavior
+
+**Problem:**
+- Download button was opening file in browser instead of downloading
+- View in iframe was triggering download instead of inline display
+
+**Root Causes:**
+1. `link.download` attribute only works for same-origin URLs
+2. Server wasn't setting `Content-Disposition` header appropriately
+3. All requests treated the same (no distinction between view/download)
+
+**Solution - Backend:**
+```javascript
+// storage.routes.js
+router.get('/download/:token', async (req, res) => {
+  const forceDownload = req.query.download === 'true';
+
+  const { data, contentType, fileName } = await localStorage.getFileForDownload(token);
+
+  res.set('Content-Type', contentType);
+
+  // Set Content-Disposition based on intent
+  if (forceDownload && fileName) {
+    // Force browser to download
+    res.set('Content-Disposition', `attachment; filename="${encodeURIComponent(fileName)}"`);
+  } else if (fileName) {
+    // Allow inline viewing
+    res.set('Content-Disposition', `inline; filename="${encodeURIComponent(fileName)}"`);
+  }
+
+  res.send(data);
+});
+```
+
+**Solution - Frontend:**
+```javascript
+// For download - add ?download=true
+const handleDownload = async (doc) => {
+  const { downloadUrl, fileName } = await documentsApi.getDownloadUrl(doc.id);
+
+  // Add download=true query param
+  const downloadUrlWithParam = downloadUrl.includes('?')
+    ? `${downloadUrl}&download=true`
+    : `${downloadUrl}?download=true`;
+
+  const link = document.createElement('a');
+  link.href = downloadUrlWithParam;
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+};
+
+// For viewing in iframe - no query param (inline)
+<iframe src={previewUrl} />
+```
+
+**Content-Disposition Header:**
+| Value | Behavior |
+|-------|----------|
+| `inline; filename="file.pdf"` | Display in browser/iframe |
+| `attachment; filename="file.pdf"` | Force download dialog |
+
+---
+
+### 14.6 MIME Type Preservation for Downloads
+
+**Problem:** Downloaded PDF files were corrupted because server returned `application/octet-stream` instead of `application/pdf`.
+
+**Root Cause:** Download token didn't store the original MIME type:
+```javascript
+// Before - hardcoded MIME type
+const getDownloadPresignedUrl = async (storageKey) => {
+  const token = createPresignedToken(storageKey, 'application/octet-stream');
+  // ...
+};
+```
+
+**Solution:** Pass MIME type through the entire chain:
+```javascript
+// 1. API endpoint passes MIME type
+const downloadUrl = await storage.getDownloadPresignedUrl(
+  document.storageKey,
+  document.mimeType,    // Pass actual MIME type
+  document.fileName     // Pass filename for Content-Disposition
+);
+
+// 2. Local storage stores it in token
+const getDownloadPresignedUrl = async (storageKey, mimeType, fileName) => {
+  const token = createPresignedToken(storageKey, mimeType, { fileName });
+  return `${baseUrl}/api/storage/download/${token}`;
+};
+
+// 3. Download route uses stored MIME type
+const { data, contentType, fileName } = await localStorage.getFileForDownload(token);
+res.set('Content-Type', contentType);  // Returns actual MIME type
+```
+
+---
+
+### 14.7 Nodemon Restart Clearing In-Memory State
+
+**Problem:** Upload tokens became invalid after code changes because nodemon restarted the server.
+
+**Error Message:**
+```
+Invalid or expired upload token
+```
+
+**Root Cause:**
+- Tokens stored in memory (`presignedUrls` Map)
+- Code change triggers nodemon restart
+- Server restarts with empty Map
+- Previously generated tokens become invalid
+
+**Solution (Development):**
+- Wait for nodemon to stabilize before uploading
+- Don't make code changes during upload process
+
+**Solution (Production):**
+- Tokens would be stored in Redis or database
+- Server restarts wouldn't affect token validity
+
+---
+
+## 15. Selective File Upload Feature
+
+### Overview
+
+The folder upload feature allows organisers to select specific files from within folders while maintaining the folder hierarchy for the selected files.
+
+### User Interface
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  Upload Documents                                          X    │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  3 folders, 5/12 files selected (2.4 MB)                        │
+│  [Select all] | [Deselect all] | [Expand] | [Collapse]          │
+│                                                                  │
+│  ┌───────────────────────────────────────────────────────────┐  │
+│  │  ▼ [✓] 📁 Board Meeting Q4                                │  │
+│  │      ▼ [—] 📁 Financial Reports                           │  │
+│  │          [✓] 📄 Q4_Budget.xlsx           1.2 MB           │  │
+│  │          [✓] 📄 Q4_Expenses.pdf           800 KB          │  │
+│  │          [ ] 📄 Draft_Notes.txt            12 KB          │  │
+│  │      ▼ [✓] 📁 Presentations                               │  │
+│  │          [✓] 📄 Slides.pptx              400 KB           │  │
+│  │          [✓] 📄 Handout.pdf              100 KB           │  │
+│  └───────────────────────────────────────────────────────────┘  │
+│                                                                  │
+│  [Clear & Reselect]                        [Cancel] [Upload 5]  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Checkbox States
+
+| Icon | State | Meaning |
+|------|-------|---------|
+| `[✓]` (CheckSquare) | All selected | All files in folder are selected |
+| `[—]` (MinusSquare) | Partial | Some files in folder are selected |
+| `[ ]` (Square) | None selected | No files in folder are selected |
+
+### Implementation
+
+**State Management:**
+```javascript
+const [selectedFiles, setSelectedFiles] = useState(new Set()); // Track selected file paths
+
+// Toggle individual file selection
+const toggleFileSelection = (filePath) => {
+  setSelectedFiles((prev) => {
+    const next = new Set(prev);
+    if (next.has(filePath)) {
+      next.delete(filePath);
+    } else {
+      next.add(filePath);
+    }
+    return next;
+  });
+};
+
+// Toggle folder selection (all children)
+const toggleFolderSelection = (folderPath) => {
+  const filePaths = getFilePathsInFolder(folderPath);
+  const currentState = getFolderSelectionState(folderPath);
+
+  setSelectedFiles((prev) => {
+    const next = new Set(prev);
+    if (currentState === 'all') {
+      filePaths.forEach((p) => next.delete(p));
+    } else {
+      filePaths.forEach((p) => next.add(p));
+    }
+    return next;
+  });
+};
+```
+
+**Upload Logic - Only Selected Files:**
+```javascript
+const handleUpload = async () => {
+  // 1. Collect only selected files
+  const filesToUpload = [];
+  const collectFiles = (node, parentPath = '') => {
+    Object.entries(node.children || {}).forEach(([name, child]) => {
+      const path = parentPath ? `${parentPath}/${name}` : name;
+      collectFiles(child, path);
+    });
+
+    (node.files || []).forEach((fileItem) => {
+      if (selectedFiles.has(fileItem.path)) {  // Only selected files
+        filesToUpload.push({
+          file: fileItem.file,
+          path: fileItem.path,
+          folderPath: parentPath,
+        });
+      }
+    });
+  };
+  collectFiles(treeData);
+
+  // 2. Determine which folders are needed
+  const foldersNeeded = new Set();
+  filesToUpload.forEach(({ folderPath }) => {
+    if (folderPath) {
+      const parts = folderPath.split('/');
+      for (let i = 1; i <= parts.length; i++) {
+        foldersNeeded.add(parts.slice(0, i).join('/'));
+      }
+    }
+  });
+
+  // 3. Create only needed folders
+  const folders = [];
+  const collectFolders = (node, parentPath = '') => {
+    Object.entries(node.children || {}).forEach(([name, child]) => {
+      const path = parentPath ? `${parentPath}/${name}` : name;
+      if (foldersNeeded.has(path)) {  // Only needed folders
+        folders.push({ name, path, parentPath: parentPath || null });
+        collectFolders(child, path);
+      }
+    });
+  };
+  collectFolders(treeData);
+
+  // 4. Upload folders and files...
+};
+```
+
+---
+
+## 16. Libraries & Dependencies Reference
+
+### Backend Dependencies
+
+| Package | Version | Purpose |
+|---------|---------|---------|
+| `express` | ^4.18.x | Web framework |
+| `helmet` | ^7.x | Security headers |
+| `cors` | ^2.8.x | Cross-origin resource sharing |
+| `morgan` | ^1.10.x | HTTP request logging |
+| `bcryptjs` | ^2.4.x | Password hashing |
+| `jsonwebtoken` | ^9.x | JWT authentication |
+| `@prisma/client` | ^5.x | Database ORM |
+| `@aws-sdk/client-s3` | ^3.x | S3 operations |
+| `@aws-sdk/s3-request-presigner` | ^3.x | Presigned URL generation |
+| `uuid` | ^9.x | UUID generation |
+| `express-validator` | ^7.x | Request validation |
+| `nodemon` | ^3.x | Development auto-restart |
+
+### Frontend Dependencies
+
+| Package | Version | Purpose |
+|---------|---------|---------|
+| `react` | ^18.2.x | UI library |
+| `react-dom` | ^18.3.x | React DOM rendering |
+| `react-router-dom` | ^6.x | Client-side routing |
+| `axios` | ^1.x | HTTP client |
+| `lucide-react` | ^0.x | Icon library |
+| `react-hot-toast` | ^2.x | Toast notifications |
+| `tailwindcss` | ^3.x | Utility CSS framework |
+| `date-fns` | ^3.x | Date formatting |
+| `vite` | ^5.x | Build tool |
+
+### Icon Usage from Lucide
+
+```javascript
+import {
+  // File/Folder icons
+  Folder, FolderOpen, FileText, FileImage, FileSpreadsheet, File,
+
+  // Action icons
+  Upload, Download, Trash2, Eye, ExternalLink,
+
+  // UI icons
+  ChevronRight, ChevronDown, X, Check, AlertCircle,
+  Loader2, RefreshCw,
+
+  // Selection icons
+  Square, CheckSquare, MinusSquare,
+} from 'lucide-react';
+```
+
+---
+
+## 17. Security Configuration Summary
+
+### Helmet Configuration
+
+```javascript
+app.use(helmet({
+  // Allow cross-origin resource loading (for file uploads)
+  crossOriginResourcePolicy: { policy: 'cross-origin' },
+
+  // CSP configuration for iframe embedding
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      frameAncestors: [
+        "'self'",
+        "http://localhost:5173",
+        "http://localhost:5174",
+        "http://localhost:3000"
+      ],
+    },
+  },
+
+  // Allow embedding resources from different origins
+  crossOriginEmbedderPolicy: false,
+}));
+```
+
+### CORS Configuration
+
+```javascript
+app.use(cors({
+  origin: [
+    'http://localhost:5173',
+    'http://localhost:5174',
+    'http://localhost:3000',
+  ],
+  credentials: true,
+  exposedHeaders: ['ETag'],
+}));
+```
+
+### File Upload Security
+
+| Security Measure | Implementation |
+|-----------------|----------------|
+| Token expiration | 1 hour TTL with auto-cleanup |
+| Single-use tokens | Tokens can be used until expiry (not single-use) |
+| Content-Type validation | Stored and verified with token |
+| File size limits | `express.raw({ limit: '60mb' })` |
+| Path traversal prevention | UUIDs for file names, controlled directory |
+
+---
+
+*Document Version: 2.0*
 *Last Updated: December 2024*
