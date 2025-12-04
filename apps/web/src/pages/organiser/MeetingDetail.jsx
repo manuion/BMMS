@@ -66,7 +66,20 @@ export default function MeetingDetail() {
   const handleDownload = async (doc) => {
     try {
       const res = await documentsApi.getDownloadUrl(doc.id);
-      window.open(res.data.downloadUrl, '_blank');
+      const { downloadUrl, fileName } = res.data;
+
+      // Add download=true query param to force download instead of inline view
+      const downloadUrlWithParam = downloadUrl.includes('?')
+        ? `${downloadUrl}&download=true`
+        : `${downloadUrl}?download=true`;
+
+      // Create link and trigger download
+      const link = document.createElement('a');
+      link.href = downloadUrlWithParam;
+      link.download = fileName;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
     } catch (error) {
       toast.error('Failed to get download URL');
     }

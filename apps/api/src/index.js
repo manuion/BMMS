@@ -21,6 +21,13 @@ const app = express();
 // Security middleware
 app.use(helmet({
   crossOriginResourcePolicy: { policy: 'cross-origin' }, // Allow cross-origin file uploads
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      frameAncestors: ["'self'", "http://localhost:5173", "http://localhost:5174", "http://localhost:3000"], // Allow embedding in frontend iframes
+    },
+  },
+  crossOriginEmbedderPolicy: false, // Allow embedding resources from different origins
 }));
 
 // CORS - configure for your frontend URLs

@@ -78,11 +78,15 @@ export default function MemberMeetingDetail() {
       const response = await documentsApi.getDownloadUrl(doc.id);
       const { downloadUrl, fileName } = response.data;
 
-      // Open download URL in new tab
+      // Add download=true query param to force download instead of inline view
+      const downloadUrlWithParam = downloadUrl.includes('?')
+        ? `${downloadUrl}&download=true`
+        : `${downloadUrl}?download=true`;
+
+      // Create link and trigger download
       const link = document.createElement('a');
-      link.href = downloadUrl;
+      link.href = downloadUrlWithParam;
       link.download = fileName;
-      link.target = '_blank';
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);

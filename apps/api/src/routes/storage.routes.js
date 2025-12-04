@@ -45,6 +45,8 @@ router.put(
 /**
  * GET /api/storage/download/:token
  * Handle file download using local storage token
+ * Query params:
+ *   - download=true: Force download (attachment) instead of inline view
  */
 router.get(
   '/download/:token',
@@ -54,14 +56,23 @@ router.get(
     }
 
     const { token } = req.params;
+    const forceDownload = req.query.download === 'true';
 
     if (!localStorage.isValidToken(token)) {
       throw new ApiError(401, 'INVALID_TOKEN', 'Invalid or expired download token');
     }
 
-    const { data, contentType } = await localStorage.getFileForDownload(token);
+    const { data, contentType, fileName } = await localStorage.getFileForDownload(token);
 
     res.set('Content-Type', contentType);
+
+    // Set Content-Disposition based on whether it's a download or view
+    if (forceDownload && fileName) {
+      res.set('Content-Disposition', `attachment; filename="${encodeURIComponent(fileName)}"`);
+    } else if (fileName) {
+      res.set('Content-Disposition', `inline; filename="${encodeURIComponent(fileName)}"`);
+    }
+
     res.send(data);
   })
 );

@@ -25,7 +25,18 @@ export default function DocumentPreview({ document, onClose }) {
 
   const handleDownload = () => {
     if (previewUrl) {
-      window.open(previewUrl, '_blank');
+      // Add download=true query param to force download instead of inline view
+      const downloadUrlWithParam = previewUrl.includes('?')
+        ? `${previewUrl}&download=true`
+        : `${previewUrl}?download=true`;
+
+      // Create link and trigger download
+      const link = document.createElement('a');
+      link.href = downloadUrlWithParam;
+      link.download = document.fileName;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
     }
   };
 

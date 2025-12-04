@@ -76,9 +76,10 @@ const getUploadPresignedUrl = async (storageKey, contentType) => {
  * Get presigned URL for file download
  * @param {string} storageKey - The storage key of the file
  * @param {string} mimeType - The MIME type of the file (optional, defaults to application/octet-stream)
+ * @param {string} fileName - The original file name (for Content-Disposition header)
  */
-const getDownloadPresignedUrl = async (storageKey, mimeType = 'application/octet-stream') => {
-  const token = createPresignedToken(storageKey, mimeType);
+const getDownloadPresignedUrl = async (storageKey, mimeType = 'application/octet-stream', fileName = null) => {
+  const token = createPresignedToken(storageKey, mimeType, { fileName });
   const baseUrl = `http://localhost:${config.port}`;
   return `${baseUrl}/api/storage/download/${token}`;
 };
@@ -190,7 +191,9 @@ const abortMultipartUpload = async (storageKey, uploadId) => {
 
 /**
  * Get file data for download
- * Returns both the file data and its content type
+ * Returns the file data, content type, and fileName
+ * Token is NOT deleted after use - it expires automatically via setTimeout
+ * This allows the same URL to be used for iframe viewing + download button
  */
 const getFileForDownload = async (token) => {
   const urlInfo = presignedUrls.get(token);
@@ -206,9 +209,11 @@ const getFileForDownload = async (token) => {
   const filePath = path.join(STORAGE_DIR, urlInfo.key);
   const data = await fs.readFile(filePath);
   const contentType = urlInfo.contentType || 'application/octet-stream';
+  const fileName = urlInfo.fileName || null;
 
-  presignedUrls.delete(token);
-  return { data, contentType };
+  // Don't delete token here - let it expire naturally via setTimeout
+  // This allows the URL to be used multiple times (e.g., iframe view + download)
+  return { data, contentType, fileName };
 };
 
 /**
