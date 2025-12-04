@@ -56,8 +56,11 @@ if (config.storageMode === 'local') {
 
   /**
    * Get presigned URL for file download
+   * @param {string} storageKey - The storage key of the file
+   * @param {string} mimeType - The MIME type (unused for S3 but accepted for API consistency)
+   * @param {number} expiresIn - URL expiry time in seconds
    */
-  const getDownloadPresignedUrl = async (storageKey, expiresIn = config.upload.presignedUrlExpiry) => {
+  const getDownloadPresignedUrl = async (storageKey, mimeType, expiresIn = config.upload.presignedUrlExpiry) => {
     const command = new GetObjectCommand({
       Bucket: config.storage.bucketName,
       Key: storageKey,

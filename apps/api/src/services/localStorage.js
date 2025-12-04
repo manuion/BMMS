@@ -74,9 +74,11 @@ const getUploadPresignedUrl = async (storageKey, contentType) => {
 
 /**
  * Get presigned URL for file download
+ * @param {string} storageKey - The storage key of the file
+ * @param {string} mimeType - The MIME type of the file (optional, defaults to application/octet-stream)
  */
-const getDownloadPresignedUrl = async (storageKey) => {
-  const token = createPresignedToken(storageKey, 'application/octet-stream');
+const getDownloadPresignedUrl = async (storageKey, mimeType = 'application/octet-stream') => {
+  const token = createPresignedToken(storageKey, mimeType);
   const baseUrl = `http://localhost:${config.port}`;
   return `${baseUrl}/api/storage/download/${token}`;
 };
@@ -188,6 +190,7 @@ const abortMultipartUpload = async (storageKey, uploadId) => {
 
 /**
  * Get file data for download
+ * Returns both the file data and its content type
  */
 const getFileForDownload = async (token) => {
   const urlInfo = presignedUrls.get(token);
@@ -202,9 +205,10 @@ const getFileForDownload = async (token) => {
 
   const filePath = path.join(STORAGE_DIR, urlInfo.key);
   const data = await fs.readFile(filePath);
+  const contentType = urlInfo.contentType || 'application/octet-stream';
 
   presignedUrls.delete(token);
-  return data;
+  return { data, contentType };
 };
 
 /**

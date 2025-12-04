@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useCallback } from 'react';
 import {
   Upload,
   Folder,
@@ -12,6 +12,9 @@ import {
   AlertCircle,
   Loader2,
   RefreshCw,
+  Square,
+  CheckSquare,
+  MinusSquare,
 } from 'lucide-react';
 import { formatFileSize } from '../../utils/helpers';
 import { documentsApi } from '../../services/api';
@@ -24,10 +27,12 @@ const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB chunks
  * Allows uploading folders with nested structure.
  * Supports chunked/multipart uploads for large files using presigned URLs.
  * Shows tree preview before upload with progress tracking.
+ * Users can selectively choose which files to upload while maintaining folder hierarchy.
  */
 export default function FolderTreeUpload({ meetingId, onUploadComplete, onCancel }) {
   const [treeData, setTreeData] = useState(null);
   const [expandedFolders, setExpandedFolders] = useState(new Set());
+  const [selectedFiles, setSelectedFiles] = useState(new Set()); // Track selected file paths
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState({
     current: 0,
@@ -123,6 +128,110 @@ export default function FolderTreeUpload({ meetingId, onUploadComplete, onCancel
     return { folders, files, totalSize };
   };
 
+  // Count selected files and their total size
+  const countSelectedItems = (node) => {
+    let files = 0;
+    let totalSize = 0;
+
+    (node.files || []).forEach((f) => {
+      if (selectedFiles.has(f.path)) {
+        files++;
+        totalSize += f.size;
+      }
+    });
+
+    Object.values(node.children || {}).forEach((child) => {
+      const childCount = countSelectedItems(child);
+      files += childCount.files;
+      totalSize += childCount.totalSize;
+    });
+
+    return { files, totalSize };
+  };
+
+  // Get all file paths from a node (for selection)
+  const getAllFilePaths = useCallback((node) => {
+    const paths = [];
+    (node.files || []).forEach((f) => paths.push(f.path));
+    Object.values(node.children || {}).forEach((child) => {
+      paths.push(...getAllFilePaths(child));
+    });
+    return paths;
+  }, []);
+
+  // Get file paths under a specific folder path
+  const getFilePathsInFolder = useCallback((folderPath) => {
+    if (!treeData) return [];
+
+    const pathParts = folderPath.split('/');
+    let current = treeData;
+
+    // Navigate to the folder
+    for (const part of pathParts) {
+      if (current.children && current.children[part]) {
+        current = current.children[part];
+      } else {
+        return [];
+      }
+    }
+
+    return getAllFilePaths(current);
+  }, [treeData, getAllFilePaths]);
+
+  // Check if all files in a folder are selected
+  const getFolderSelectionState = useCallback((folderPath) => {
+    const filePaths = getFilePathsInFolder(folderPath);
+    if (filePaths.length === 0) return 'none';
+
+    const selectedCount = filePaths.filter((p) => selectedFiles.has(p)).length;
+    if (selectedCount === 0) return 'none';
+    if (selectedCount === filePaths.length) return 'all';
+    return 'partial';
+  }, [getFilePathsInFolder, selectedFiles]);
+
+  // Toggle file selection
+  const toggleFileSelection = (filePath) => {
+    setSelectedFiles((prev) => {
+      const next = new Set(prev);
+      if (next.has(filePath)) {
+        next.delete(filePath);
+      } else {
+        next.add(filePath);
+      }
+      return next;
+    });
+  };
+
+  // Toggle folder selection (select/deselect all files in folder)
+  const toggleFolderSelection = (folderPath) => {
+    const filePaths = getFilePathsInFolder(folderPath);
+    const currentState = getFolderSelectionState(folderPath);
+
+    setSelectedFiles((prev) => {
+      const next = new Set(prev);
+      if (currentState === 'all') {
+        // Deselect all files in this folder
+        filePaths.forEach((p) => next.delete(p));
+      } else {
+        // Select all files in this folder
+        filePaths.forEach((p) => next.add(p));
+      }
+      return next;
+    });
+  };
+
+  // Select all files
+  const selectAllFiles = () => {
+    if (!treeData) return;
+    const allPaths = getAllFilePaths(treeData);
+    setSelectedFiles(new Set(allPaths));
+  };
+
+  // Deselect all files
+  const deselectAllFiles = () => {
+    setSelectedFiles(new Set());
+  };
+
   const handleFolderSelect = (e) => {
     const files = e.target.files;
     if (files.length === 0) return;
@@ -131,6 +240,10 @@ export default function FolderTreeUpload({ meetingId, onUploadComplete, onCancel
     setTreeData(tree);
     setError(null);
     setFileStatuses({});
+
+    // Auto-select all files
+    const allPaths = getAllFilePaths(tree);
+    setSelectedFiles(new Set(allPaths));
 
     const firstLevelFolders = Object.keys(tree.children);
     setExpandedFolders(new Set(firstLevelFolders));
@@ -157,6 +270,10 @@ export default function FolderTreeUpload({ meetingId, onUploadComplete, onCancel
     setTreeData(root);
     setError(null);
     setFileStatuses({});
+
+    // Auto-select all files
+    const allPaths = root.files.map((f) => f.path);
+    setSelectedFiles(new Set(allPaths));
   };
 
   const toggleFolder = (path) => {
@@ -309,8 +426,8 @@ export default function FolderTreeUpload({ meetingId, onUploadComplete, onCancel
     abortControllerRef.current = new AbortController();
 
     try {
-      // Collect all files with their paths
-      const allFiles = [];
+      // Collect only selected files with their paths
+      const filesToUpload = [];
       const collectFiles = (node, parentPath = '') => {
         Object.entries(node.children || {}).forEach(([name, child]) => {
           const path = parentPath ? `${parentPath}/${name}` : name;
@@ -318,30 +435,53 @@ export default function FolderTreeUpload({ meetingId, onUploadComplete, onCancel
         });
 
         (node.files || []).forEach((fileItem) => {
-          allFiles.push({
-            file: fileItem.file,
-            path: fileItem.path,
-            folderPath: parentPath,
-          });
+          // Only include selected files
+          if (selectedFiles.has(fileItem.path)) {
+            filesToUpload.push({
+              file: fileItem.file,
+              path: fileItem.path,
+              folderPath: parentPath,
+            });
+          }
         });
       };
       collectFiles(treeData);
 
+      if (filesToUpload.length === 0) {
+        setError('Please select at least one file to upload');
+        setUploading(false);
+        return;
+      }
+
       setUploadProgress({
         current: 0,
-        total: allFiles.length,
+        total: filesToUpload.length,
         currentFile: '',
         fileProgress: 0,
         status: 'uploading',
       });
 
-      // Collect folder structure
+      // Collect folder structure - only include folders that contain selected files
+      const foldersNeeded = new Set();
+      filesToUpload.forEach(({ folderPath }) => {
+        if (folderPath) {
+          // Add this folder and all its parent folders
+          const parts = folderPath.split('/');
+          for (let i = 1; i <= parts.length; i++) {
+            foldersNeeded.add(parts.slice(0, i).join('/'));
+          }
+        }
+      });
+
       const folders = [];
       const collectFolders = (node, parentPath = '') => {
         Object.entries(node.children || {}).forEach(([name, child]) => {
           const path = parentPath ? `${parentPath}/${name}` : name;
-          folders.push({ name, path, parentPath: parentPath || null });
-          collectFolders(child, path);
+          // Only include folders that are needed for selected files
+          if (foldersNeeded.has(path)) {
+            folders.push({ name, path, parentPath: parentPath || null });
+            collectFolders(child, path);
+          }
         });
       };
       collectFolders(treeData);
@@ -371,9 +511,9 @@ export default function FolderTreeUpload({ meetingId, onUploadComplete, onCancel
         }
       }
 
-      // Upload each file
-      for (let i = 0; i < allFiles.length; i++) {
-        const { file, path, folderPath } = allFiles[i];
+      // Upload each selected file
+      for (let i = 0; i < filesToUpload.length; i++) {
+        const { file, path, folderPath } = filesToUpload[i];
 
         setUploadProgress((prev) => ({
           ...prev,
@@ -397,7 +537,7 @@ export default function FolderTreeUpload({ meetingId, onUploadComplete, onCancel
 
       setUploadProgress((prev) => ({
         ...prev,
-        current: allFiles.length,
+        current: filesToUpload.length,
         status: 'completed',
       }));
     } catch (err) {
@@ -418,6 +558,7 @@ export default function FolderTreeUpload({ meetingId, onUploadComplete, onCancel
   };
 
   const stats = treeData ? countItems(treeData) : null;
+  const selectedStats = treeData ? countSelectedItems(treeData) : null;
   const treeList = treeData ? treeToList(treeData) : [];
 
   const getFileStatusIcon = (status, isUploadComplete) => {
@@ -497,15 +638,32 @@ export default function FolderTreeUpload({ meetingId, onUploadComplete, onCancel
           <div className="px-4 py-2 bg-gray-50 border-b flex items-center justify-between">
             <div className="text-sm text-gray-600">
               <span className="font-medium">{stats.folders}</span> folders,{' '}
-              <span className="font-medium">{stats.files}</span> files ({formatFileSize(stats.totalSize)})
+              <span className="font-medium text-primary-600">{selectedStats.files}</span>
+              <span className="text-gray-400">/{stats.files}</span> files selected ({formatFileSize(selectedStats.totalSize)})
             </div>
             <div className="flex gap-2">
+              <button
+                onClick={selectAllFiles}
+                className="text-xs text-primary-600 hover:text-primary-700"
+                disabled={uploading}
+              >
+                Select all
+              </button>
+              <span className="text-gray-300">|</span>
+              <button
+                onClick={deselectAllFiles}
+                className="text-xs text-primary-600 hover:text-primary-700"
+                disabled={uploading}
+              >
+                Deselect all
+              </button>
+              <span className="text-gray-300">|</span>
               <button
                 onClick={expandAll}
                 className="text-xs text-primary-600 hover:text-primary-700"
                 disabled={uploading}
               >
-                Expand all
+                Expand
               </button>
               <span className="text-gray-300">|</span>
               <button
@@ -513,71 +671,106 @@ export default function FolderTreeUpload({ meetingId, onUploadComplete, onCancel
                 className="text-xs text-primary-600 hover:text-primary-700"
                 disabled={uploading}
               >
-                Collapse all
+                Collapse
               </button>
             </div>
           </div>
 
           {/* Tree view */}
           <div className="max-h-80 overflow-y-auto p-2">
-            {treeList.map((item, index) => (
-              <div
-                key={item.fullPath + index}
-                className={`flex items-center gap-2 py-1.5 px-2 rounded group ${
-                  item.status === 'uploading' ? 'bg-blue-50' :
-                  item.status === 'completed' ? 'bg-green-50' :
-                  item.status === 'error' ? 'bg-red-50' :
-                  'hover:bg-gray-50'
-                }`}
-                style={{ paddingLeft: `${item.depth * 20 + 8}px` }}
-              >
-                {item.type === 'folder' ? (
-                  <>
-                    <button
-                      onClick={() => toggleFolder(item.fullPath)}
-                      className="p-0.5 hover:bg-gray-200 rounded"
-                      disabled={uploading}
-                    >
+            {treeList.map((item, index) => {
+              const isFile = item.type === 'file';
+              const isSelected = isFile && selectedFiles.has(item.fullPath);
+              const folderState = !isFile ? getFolderSelectionState(item.fullPath) : null;
+
+              return (
+                <div
+                  key={item.fullPath + index}
+                  className={`flex items-center gap-2 py-1.5 px-2 rounded group ${
+                    item.status === 'uploading' ? 'bg-blue-50' :
+                    item.status === 'completed' ? 'bg-green-50' :
+                    item.status === 'error' ? 'bg-red-50' :
+                    (isFile && !isSelected) ? 'opacity-50' :
+                    'hover:bg-gray-50'
+                  }`}
+                  style={{ paddingLeft: `${item.depth * 20 + 8}px` }}
+                >
+                  {item.type === 'folder' ? (
+                    <>
+                      <button
+                        onClick={() => toggleFolder(item.fullPath)}
+                        className="p-0.5 hover:bg-gray-200 rounded"
+                        disabled={uploading}
+                      >
+                        {item.isExpanded ? (
+                          <ChevronDown size={14} className="text-gray-400" />
+                        ) : (
+                          <ChevronRight size={14} className="text-gray-400" />
+                        )}
+                      </button>
+                      {/* Folder checkbox */}
+                      <button
+                        onClick={() => toggleFolderSelection(item.fullPath)}
+                        className="p-0.5 hover:bg-gray-200 rounded"
+                        disabled={uploading}
+                        title={folderState === 'all' ? 'Deselect all files in folder' : 'Select all files in folder'}
+                      >
+                        {folderState === 'all' ? (
+                          <CheckSquare size={14} className="text-primary-600" />
+                        ) : folderState === 'partial' ? (
+                          <MinusSquare size={14} className="text-primary-400" />
+                        ) : (
+                          <Square size={14} className="text-gray-400" />
+                        )}
+                      </button>
                       {item.isExpanded ? (
-                        <ChevronDown size={14} className="text-gray-400" />
+                        <FolderOpen size={16} className="text-yellow-500" />
                       ) : (
-                        <ChevronRight size={14} className="text-gray-400" />
+                        <Folder size={16} className="text-yellow-500" />
                       )}
-                    </button>
-                    {item.isExpanded ? (
-                      <FolderOpen size={16} className="text-yellow-500" />
-                    ) : (
-                      <Folder size={16} className="text-yellow-500" />
-                    )}
-                    <span className="flex-1 text-sm font-medium truncate">{item.name}</span>
-                    {!uploading && (
+                      <span className="flex-1 text-sm font-medium truncate">{item.name}</span>
+                      {!uploading && (
+                        <button
+                          onClick={() => removeItem(item.fullPath, true)}
+                          className="p-1 hover:bg-red-50 rounded opacity-0 group-hover:opacity-100"
+                        >
+                          <Trash2 size={14} className="text-red-400" />
+                        </button>
+                      )}
+                    </>
+                  ) : (
+                    <>
+                      <span className="w-5" />
+                      {/* File checkbox */}
                       <button
-                        onClick={() => removeItem(item.fullPath, true)}
-                        className="p-1 hover:bg-red-50 rounded opacity-0 group-hover:opacity-100"
+                        onClick={() => toggleFileSelection(item.fullPath)}
+                        className="p-0.5 hover:bg-gray-200 rounded"
+                        disabled={uploading}
+                        title={isSelected ? 'Deselect file' : 'Select file'}
                       >
-                        <Trash2 size={14} className="text-red-400" />
+                        {isSelected ? (
+                          <CheckSquare size={14} className="text-primary-600" />
+                        ) : (
+                          <Square size={14} className="text-gray-400" />
+                        )}
                       </button>
-                    )}
-                  </>
-                ) : (
-                  <>
-                    <span className="w-5" />
-                    <FileText size={16} className="text-gray-400" />
-                    <span className="flex-1 text-sm truncate">{item.name}</span>
-                    {getFileStatusIcon(item.status, uploadProgress.status === 'completed')}
-                    <span className="text-xs text-gray-400">{formatFileSize(item.size)}</span>
-                    {!uploading && (
-                      <button
-                        onClick={() => removeItem(item.fullPath, false)}
-                        className="p-1 hover:bg-red-50 rounded opacity-0 group-hover:opacity-100"
-                      >
-                        <Trash2 size={14} className="text-red-400" />
-                      </button>
-                    )}
-                  </>
-                )}
-              </div>
-            ))}
+                      <FileText size={16} className={isSelected ? 'text-gray-500' : 'text-gray-300'} />
+                      <span className={`flex-1 text-sm truncate ${!isSelected ? 'text-gray-400' : ''}`}>{item.name}</span>
+                      {getFileStatusIcon(item.status, uploadProgress.status === 'completed')}
+                      <span className="text-xs text-gray-400">{formatFileSize(item.size)}</span>
+                      {!uploading && (
+                        <button
+                          onClick={() => removeItem(item.fullPath, false)}
+                          className="p-1 hover:bg-red-50 rounded opacity-0 group-hover:opacity-100"
+                        >
+                          <Trash2 size={14} className="text-red-400" />
+                        </button>
+                      )}
+                    </>
+                  )}
+                </div>
+              );
+            })}
           </div>
 
           {/* Upload Progress */}
@@ -630,6 +823,7 @@ export default function FolderTreeUpload({ meetingId, onUploadComplete, onCancel
                 setTreeData(null);
                 setError(null);
                 setFileStatuses({});
+                setSelectedFiles(new Set());
                 setUploadProgress({ current: 0, total: 0, currentFile: '', fileProgress: 0, status: 'idle' });
               }}
               className="btn btn-secondary"
@@ -649,7 +843,7 @@ export default function FolderTreeUpload({ meetingId, onUploadComplete, onCancel
                 <button
                   onClick={handleUpload}
                   className="btn btn-primary flex items-center gap-2"
-                  disabled={uploading || stats.files === 0}
+                  disabled={uploading || selectedStats.files === 0}
                 >
                   {uploading ? (
                     <>
@@ -659,7 +853,7 @@ export default function FolderTreeUpload({ meetingId, onUploadComplete, onCancel
                   ) : (
                     <>
                       <Upload size={16} />
-                      Upload {stats.files} files
+                      Upload {selectedStats.files} file{selectedStats.files !== 1 ? 's' : ''}
                     </>
                   )}
                 </button>

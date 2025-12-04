@@ -59,9 +59,9 @@ router.get(
       throw new ApiError(401, 'INVALID_TOKEN', 'Invalid or expired download token');
     }
 
-    const data = await localStorage.getFileForDownload(token);
+    const { data, contentType } = await localStorage.getFileForDownload(token);
 
-    res.set('Content-Type', 'application/octet-stream');
+    res.set('Content-Type', contentType);
     res.send(data);
   })
 );

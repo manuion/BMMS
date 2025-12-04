@@ -510,7 +510,7 @@ router.get(
       throw new ApiError(403, API_ERRORS.FORBIDDEN, 'Access denied');
     }
 
-    const downloadUrl = await storage.getDownloadPresignedUrl(document.storageKey);
+    const downloadUrl = await storage.getDownloadPresignedUrl(document.storageKey, document.mimeType);
 
     res.json({
       success: true,

@@ -19,12 +19,15 @@ const { errorHandler } = require('./middleware/errorHandler');
 const app = express();
 
 // Security middleware
-app.use(helmet());
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: 'cross-origin' }, // Allow cross-origin file uploads
+}));
 
 // CORS - configure for your frontend URLs
 app.use(cors({
   origin: [
     'http://localhost:5173', // Vite dev server
+    'http://localhost:5174', // Vite alternate port
     'http://localhost:3000', // Alternative
   ],
   credentials: true,
