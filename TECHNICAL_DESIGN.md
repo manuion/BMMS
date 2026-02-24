@@ -18,6 +18,7 @@
 15. [Selective File Upload Feature](#15-selective-file-upload-feature)
 16. [Libraries & Dependencies Reference](#16-libraries--dependencies-reference)
 17. [Security Configuration Summary](#17-security-configuration-summary)
+18. [Mobile Offline Features](#18-mobile-offline-features)
 
 ---
 
@@ -1927,5 +1928,268 @@ app.use(cors({
 
 ---
 
-*Document Version: 2.0*
+## 18. Mobile Offline Features
+
+The mobile app (React Native) is designed exclusively for **external members** who need to view meeting details and documents while potentially being offline. This section documents the offline-first architecture.
+
+### Overview
+
+| Feature | Online Behavior | Offline Behavior |
+|---------|----------------|------------------|
+| Meeting List | Fetch from API & cache | Show cached data |
+| Meeting Details | Fetch from API & cache | Show cached data |
+| Documents | Stream from server | Open from local storage |
+| Accept/Decline | Enabled | Disabled with message |
+| Download for Offline | Available | Not available |
+
+### User Experience Flow
+
+```
+1. User opens app (online)
+   └── Meetings fetched from API
+   └── Meetings cached to AsyncStorage
+   └── "Last synced" timestamp saved
+
+2. User views meeting detail (online)
+   └── Meeting data fetched from API
+   └── Documents list fetched
+   └── All data cached locally
+   └── User can tap "↓" to save document offline
+
+3. User goes offline
+   └── Banner shows "Offline Mode - View Only"
+   └── Cached meetings displayed with "Last synced" time
+   └── Accept/Decline buttons disabled (grayed out)
+   └── Documents marked with "!" if not saved offline
+   └── Documents marked with "✓" can be opened
+
+4. User comes back online
+   └── Data automatically refreshes
+   └── Full functionality restored
+```
+
+### Architecture Components
+
+#### 1. Network Status Detection
+
+```javascript
+// apps/mobile/src/hooks/useNetworkStatus.js
+import { useState, useEffect } from 'react';
+import NetInfo from '@react-native-community/netinfo';
+
+export function useNetworkStatus() {
+  const [isConnected, setIsConnected] = useState(true);
+  const [connectionType, setConnectionType] = useState(null);
+
+  useEffect(() => {
+    const unsubscribe = NetInfo.addEventListener((state) => {
+      setIsConnected(state.isConnected);
+      setConnectionType(state.type);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  return { isConnected, connectionType };
+}
+```
+
+#### 2. Offline Storage Service
+
+The `offlineStorage.js` service handles two types of offline data:
+
+**Document Storage (react-native-fs)**
+```javascript
+// File storage location
+const OFFLINE_DOCS_DIR = `${RNFS.DocumentDirectoryPath}/offline_documents`;
+
+// Download document to local storage
+export const downloadDocument = async (document, downloadUrl, onProgress) => {
+  const localPath = `${OFFLINE_DOCS_DIR}/${document.id}.${ext}`;
+
+  const result = await RNFS.downloadFile({
+    fromUrl: downloadUrl,
+    toFile: localPath,
+    progress: (res) => {
+      onProgress((res.bytesWritten / res.contentLength) * 100);
+    },
+  }).promise;
+
+  // Save metadata with local path
+  await saveDocumentMetadata({ ...document, localPath, isOffline: true });
+};
+```
+
+**Meeting Cache (AsyncStorage)**
+```javascript
+// Cache meetings list
+export const saveMeetingsOffline = async (meetings) => {
+  await AsyncStorage.setItem('offline_meetings', JSON.stringify({
+    meetings,
+    cachedAt: new Date().toISOString(),
+  }));
+};
+
+// Cache individual meeting detail
+export const saveMeetingDetailOffline = async (meetingId, meeting, folders, documents) => {
+  await AsyncStorage.setItem(`offline_meeting_${meetingId}`, JSON.stringify({
+    meeting,
+    folders,
+    documents,
+    cachedAt: new Date().toISOString(),
+  }));
+};
+```
+
+#### 3. Storage Keys Reference
+
+| Key | Purpose | Data Structure |
+|-----|---------|----------------|
+| `offline_documents` | Document metadata | `[{ id, fileName, fileSize, localPath, savedAt }]` |
+| `offline_meetings` | Meetings list | `{ meetings: [], cachedAt }` |
+| `offline_meeting_{id}` | Single meeting | `{ meeting, folders, documents, cachedAt }` |
+
+### UI Components for Offline Mode
+
+#### Offline Banner (HomeScreen, MeetingDetailScreen)
+
+```jsx
+{!isConnected && (
+  <View style={styles.offlineBanner}>
+    <Text>Offline Mode - View Only</Text>
+    <Text>Last synced: {format(cachedAt, 'PPp')}</Text>
+  </View>
+)}
+```
+
+#### Disabled Response Buttons
+
+```jsx
+<TouchableOpacity
+  style={[
+    styles.acceptButton,
+    !isConnected && styles.buttonDisabled, // Gray background
+  ]}
+  disabled={!isConnected}
+>
+  <Text>{isConnected ? 'Accept' : 'Accept (Offline)'}</Text>
+</TouchableOpacity>
+```
+
+#### Document Status Indicators
+
+| Icon | Meaning |
+|------|---------|
+| ↓ (Blue) | Available for download (online only) |
+| ✓ (Green) | Saved offline, can be opened |
+| ! (Yellow) | Not saved, unavailable offline |
+| Spinner | Currently downloading |
+
+### Document Viewing
+
+```javascript
+// Open offline document
+import FileViewer from 'react-native-file-viewer';
+
+const handleViewDocument = async (doc) => {
+  if (isOffline) {
+    const localPath = await offlineStorage.getOfflineDocumentPath(doc.id);
+    await FileViewer.open(localPath, {
+      showOpenWithDialog: true,
+      displayName: doc.fileName,
+    });
+  } else if (isConnected) {
+    // Stream from server via Linking
+    await Linking.openURL(downloadUrl);
+  } else {
+    Alert.alert('Not Available Offline', 'Save this document while online');
+  }
+};
+```
+
+### Required Dependencies
+
+```json
+{
+  "dependencies": {
+    "@react-native-async-storage/async-storage": "^2.2.0",
+    "@react-native-community/netinfo": "^11.4.1",
+    "react-native-fs": "^2.20.0",
+    "react-native-file-viewer": "^2.1.5"
+  }
+}
+```
+
+### Installation Notes for Native Modules
+
+**iOS (requires CocoaPods)**
+```bash
+cd apps/mobile/ios && pod install
+```
+
+**Android**
+- `react-native-fs` and `react-native-file-viewer` auto-link in React Native 0.60+
+- May need `android:requestLegacyExternalStorage="true"` in AndroidManifest.xml for older Android versions
+
+### Data Synchronization Strategy
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    APP LOAD                              │
+├─────────────────────────────────────────────────────────┤
+│  isConnected?                                           │
+│     YES → fetchFromAPI() → cacheLocally()               │
+│     NO  → loadFromCache()                               │
+└─────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────┐
+│              NETWORK STATUS CHANGE                       │
+├─────────────────────────────────────────────────────────┤
+│  Online → Offline:                                      │
+│     • Show offline banner                               │
+│     • Disable accept/decline buttons                    │
+│     • Show "!" for non-cached documents                 │
+│                                                         │
+│  Offline → Online:                                      │
+│     • Refresh data from API                             │
+│     • Update local cache                                │
+│     • Enable all features                               │
+└─────────────────────────────────────────────────────────┘
+```
+
+### Download Progress UI
+
+```jsx
+// In DocumentTree component
+{isDownloading && (
+  <View style={styles.progressContainer}>
+    <View style={[styles.progressBar, { width: `${downloadProgress}%` }]} />
+  </View>
+)}
+```
+
+### Error Handling
+
+| Scenario | Handling |
+|----------|----------|
+| API fetch fails while online | Load from cache as fallback |
+| Document not cached when offline | Alert user to save while online |
+| File viewer fails | Show "Cannot open file type" message |
+| Storage full | Alert user, suggest clearing old files |
+
+### Offline Docs Screen Features
+
+The dedicated "Offline Docs" tab shows:
+- Total documents saved
+- Storage used (calculated from actual file sizes)
+- List of all offline documents with:
+  - File type icon (color-coded)
+  - File name
+  - File size
+  - Date saved
+- "Clear All" option to free storage
+- Tap to open with FileViewer
+
+---
+
+*Document Version: 2.1*
 *Last Updated: December 2024*

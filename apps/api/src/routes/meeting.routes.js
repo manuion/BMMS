@@ -16,7 +16,7 @@ router.get(
   '/',
   authenticate,
   asyncHandler(async (req, res) => {
-    const { status, committeeId, upcoming } = req.query;
+    const { status, committeeId, upcoming, past } = req.query;
 
     // Get user's committee IDs
     const memberCommitteeIds = req.user.committeeMemberships.map((m) => m.committeeId);
@@ -32,6 +32,12 @@ router.get(
     if (upcoming === 'true') {
       where.scheduledAt = { gte: new Date() };
       where.status = { in: [MEETING_STATUS.SCHEDULED, MEETING_STATUS.RESCHEDULED] };
+    } else if (past === 'true') {
+      // Past meetings: either scheduled date has passed, or status is completed/cancelled
+      where.OR = [
+        { scheduledAt: { lt: new Date() } },
+        { status: { in: [MEETING_STATUS.COMPLETED, MEETING_STATUS.CANCELLED] } },
+      ];
     }
 
     const meetings = await prisma.meeting.findMany({

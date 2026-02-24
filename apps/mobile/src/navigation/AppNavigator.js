@@ -10,6 +10,7 @@ import { useAuth } from '../context/AuthContext';
 import LoginScreen from '../screens/auth/LoginScreen';
 import HomeScreen from '../screens/home/HomeScreen';
 import MeetingDetailScreen from '../screens/meeting/MeetingDetailScreen';
+import DocumentViewerScreen from '../screens/meeting/DocumentViewerScreen';
 import OfflineDocsScreen from '../screens/offline/OfflineDocsScreen';
 
 const Stack = createNativeStackNavigator();
@@ -173,6 +174,11 @@ function MainNavigator() {
         name="MeetingDetail"
         component={MeetingDetailScreen}
         options={{ title: 'Meeting Details' }}
+      />
+      <Stack.Screen
+        name="DocumentViewer"
+        component={DocumentViewerScreen}
+        options={{ title: 'Document' }}
       />
     </Stack.Navigator>
   );

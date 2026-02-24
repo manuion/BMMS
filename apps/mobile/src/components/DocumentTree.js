@@ -5,6 +5,7 @@ import {
   TouchableOpacity,
   StyleSheet,
   ScrollView,
+  ActivityIndicator,
 } from 'react-native';
 import { formatFileSize } from '../utils/helpers';
 
@@ -12,7 +13,7 @@ import { formatFileSize } from '../utils/helpers';
  * DocumentTree Component for Mobile
  *
  * Displays uploaded documents in a hierarchical tree structure.
- * Supports expand/collapse folders and file actions.
+ * Supports expand/collapse folders, file actions, and download progress.
  */
 export default function DocumentTree({
   folders = [],
@@ -20,6 +21,9 @@ export default function DocumentTree({
   onViewDocument,
   onDownloadOffline,
   offlineDocIds = [],
+  downloadingDocId = null,
+  downloadProgress = 0,
+  isConnected = true,
 }) {
   const [expandedFolders, setExpandedFolders] = useState(new Set());
 
@@ -79,6 +83,16 @@ export default function DocumentTree({
     return 'FILE';
   };
 
+  const getIconColor = (fileName) => {
+    const ext = fileName?.split('.').pop()?.toLowerCase();
+    if (['pdf'].includes(ext)) return '#ef4444';
+    if (['doc', 'docx'].includes(ext)) return '#2563eb';
+    if (['xls', 'xlsx'].includes(ext)) return '#22c55e';
+    if (['ppt', 'pptx'].includes(ext)) return '#f97316';
+    if (['jpg', 'jpeg', 'png', 'gif'].includes(ext)) return '#8b5cf6';
+    return '#6b7280';
+  };
+
   const renderFolder = (folder, depth = 0) => {
     const isExpanded = expandedFolders.has(folder.id);
     const hasChildren = folder.children.length > 0 || folder.files.length > 0;
@@ -114,6 +128,11 @@ export default function DocumentTree({
   const renderFile = (doc, depth = 0) => {
     const isOffline = offlineDocIds.includes(doc.id);
 
+    // When offline, only show documents that are saved for offline viewing
+    if (!isConnected && !isOffline) {
+      return null;
+    }
+
     return (
       <TouchableOpacity
         key={doc.id}
@@ -131,59 +150,79 @@ export default function DocumentTree({
           </Text>
           <Text style={styles.fileMeta}>
             {formatFileSize(doc.fileSize)}
-            {isOffline && ' • Offline'}
+            {isOffline && ' • Available Offline'}
           </Text>
         </View>
 
+        {/* Show offline badge if available offline, otherwise show view arrow */}
         {isOffline ? (
           <View style={styles.offlineBadge}>
             <Text style={styles.offlineBadgeText}>✓</Text>
           </View>
         ) : (
-          <TouchableOpacity
-            style={styles.downloadBtn}
-            onPress={() => onDownloadOffline?.(doc)}
-          >
-            <Text style={styles.downloadBtnText}>↓</Text>
-          </TouchableOpacity>
+          <View style={styles.viewArrow}>
+            <Text style={styles.viewArrowText}>›</Text>
+          </View>
         )}
       </TouchableOpacity>
     );
   };
 
-  const getIconColor = (fileName) => {
-    const ext = fileName?.split('.').pop()?.toLowerCase();
-    if (['pdf'].includes(ext)) return '#ef4444';
-    if (['doc', 'docx'].includes(ext)) return '#2563eb';
-    if (['xls', 'xlsx'].includes(ext)) return '#22c55e';
-    if (['ppt', 'pptx'].includes(ext)) return '#f97316';
-    if (['jpg', 'jpeg', 'png', 'gif'].includes(ext)) return '#8b5cf6';
-    return '#6b7280';
-  };
-
   const tree = buildTree();
-  const totalItems = folders.length + documents.length;
+
+  // Count available documents (when offline, only count offline docs)
+  const availableDocsCount = !isConnected
+    ? documents.filter(d => offlineDocIds.includes(d.id)).length
+    : documents.length;
+  const totalItems = folders.length + availableDocsCount;
 
   if (totalItems === 0) {
     return (
       <View style={styles.emptyState}>
         <Text style={styles.emptyIcon}>📁</Text>
-        <Text style={styles.emptyText}>No documents uploaded yet</Text>
+        <Text style={styles.emptyText}>
+          {!isConnected
+            ? 'No documents saved for offline viewing'
+            : 'No documents uploaded yet'}
+        </Text>
       </View>
     );
   }
 
   return (
-    <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
-      {tree.folders.map((folder) => renderFolder(folder))}
-      {tree.files.map((file) => renderFile(file))}
-    </ScrollView>
+    <View style={styles.container}>
+      {/* Offline hint */}
+      {!isConnected && (
+        <View style={styles.offlineHint}>
+          <Text style={styles.offlineHintText}>
+            Showing only documents saved for offline viewing
+          </Text>
+        </View>
+      )}
+
+      <ScrollView showsVerticalScrollIndicator={false}>
+        {tree.folders.map((folder) => renderFolder(folder))}
+        {tree.files.map((file) => renderFile(file))}
+      </ScrollView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
+  },
+  offlineHint: {
+    backgroundColor: '#fef3c7',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 6,
+    marginBottom: 12,
+  },
+  offlineHintText: {
+    fontSize: 12,
+    color: '#92400e',
+    textAlign: 'center',
   },
   itemRow: {
     flexDirection: 'row',
@@ -236,6 +275,24 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#6b7280',
   },
+  progressContainer: {
+    height: 4,
+    backgroundColor: '#e5e7eb',
+    borderRadius: 2,
+    marginTop: 4,
+    overflow: 'hidden',
+  },
+  progressBar: {
+    height: '100%',
+    backgroundColor: '#2563eb',
+    borderRadius: 2,
+  },
+  downloadingIndicator: {
+    width: 32,
+    height: 32,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
   offlineBadge: {
     width: 24,
     height: 24,
@@ -249,18 +306,16 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: 'bold',
   },
-  downloadBtn: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: '#2563eb',
+  viewArrow: {
+    width: 24,
+    height: 24,
     justifyContent: 'center',
     alignItems: 'center',
   },
-  downloadBtnText: {
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: 'bold',
+  viewArrowText: {
+    color: '#9ca3af',
+    fontSize: 20,
+    fontWeight: '300',
   },
   emptyState: {
     alignItems: 'center',

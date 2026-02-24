@@ -3,7 +3,7 @@ import { X, Download, ExternalLink, FileText, Image, File } from 'lucide-react';
 import { documentsApi } from '../../services/api';
 import LoadingSpinner from './LoadingSpinner';
 
-export default function DocumentPreview({ document, onClose }) {
+export default function DocumentPreview({ document, onClose, hideDownload = false }) {
   const [loading, setLoading] = useState(true);
   const [previewUrl, setPreviewUrl] = useState(null);
   const [error, setError] = useState(null);
@@ -121,13 +121,15 @@ export default function DocumentPreview({ document, onClose }) {
             <File size={64} className="mb-4 text-gray-300" />
             <p className="mb-2">Preview not available for this file type</p>
             <p className="text-sm text-gray-400">{document.fileName}</p>
-            <button
-              onClick={handleDownload}
-              className="mt-4 btn btn-primary flex items-center gap-2"
-            >
-              <Download size={16} />
-              Download to view
-            </button>
+            {!hideDownload && (
+              <button
+                onClick={handleDownload}
+                className="mt-4 btn btn-primary flex items-center gap-2"
+              >
+                <Download size={16} />
+                Download to view
+              </button>
+            )}
           </div>
         );
     }
@@ -160,23 +162,27 @@ export default function DocumentPreview({ document, onClose }) {
           </div>
 
           <div className="flex items-center gap-2">
-            <button
-              onClick={handleDownload}
-              className="p-2 rounded hover:bg-gray-100"
-              title="Download"
-            >
-              <Download size={20} className="text-gray-600" />
-            </button>
-            {previewUrl && (
-              <a
-                href={previewUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="p-2 rounded hover:bg-gray-100"
-                title="Open in new tab"
-              >
-                <ExternalLink size={20} className="text-gray-600" />
-              </a>
+            {!hideDownload && (
+              <>
+                <button
+                  onClick={handleDownload}
+                  className="p-2 rounded hover:bg-gray-100"
+                  title="Download"
+                >
+                  <Download size={20} className="text-gray-600" />
+                </button>
+                {previewUrl && (
+                  <a
+                    href={previewUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="p-2 rounded hover:bg-gray-100"
+                    title="Open in new tab"
+                  >
+                    <ExternalLink size={20} className="text-gray-600" />
+                  </a>
+                )}
+              </>
             )}
             <button
               onClick={onClose}

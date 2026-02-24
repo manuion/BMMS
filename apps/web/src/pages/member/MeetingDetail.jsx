@@ -10,8 +10,6 @@ import {
   CheckCircle,
   XCircle,
   AlertCircle,
-  Download,
-  Eye,
   Loader2,
 } from 'lucide-react';
 import { meetingsApi, documentsApi } from '../../services/api';
@@ -70,28 +68,6 @@ export default function MemberMeetingDetail() {
       toast.error(error.message || 'Failed to submit response');
     } finally {
       setResponding(false);
-    }
-  };
-
-  const handleDownload = async (doc) => {
-    try {
-      const response = await documentsApi.getDownloadUrl(doc.id);
-      const { downloadUrl, fileName } = response.data;
-
-      // Add download=true query param to force download instead of inline view
-      const downloadUrlWithParam = downloadUrl.includes('?')
-        ? `${downloadUrl}&download=true`
-        : `${downloadUrl}?download=true`;
-
-      // Create link and trigger download
-      const link = document.createElement('a');
-      link.href = downloadUrlWithParam;
-      link.download = fileName;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-    } catch (error) {
-      toast.error('Failed to download document');
     }
   };
 
@@ -200,11 +176,11 @@ export default function MemberMeetingDetail() {
               <div className="mt-4 flex gap-3">
                 <button
                   onClick={() => handleRespond('accepted')}
-                  disabled={responding}
+                  disabled={responding || myStatus === 'accepted'}
                   className={`btn flex items-center gap-2 ${
                     myStatus === 'accepted'
-                      ? 'bg-green-600 text-white hover:bg-green-700'
-                      : 'btn-secondary'
+                      ? 'bg-green-600 text-white opacity-60 cursor-not-allowed'
+                      : 'btn-secondary hover:bg-green-50'
                   }`}
                 >
                   {responding ? (
@@ -216,11 +192,11 @@ export default function MemberMeetingDetail() {
                 </button>
                 <button
                   onClick={() => handleRespond('declined')}
-                  disabled={responding}
+                  disabled={responding || myStatus === 'declined'}
                   className={`btn flex items-center gap-2 ${
                     myStatus === 'declined'
-                      ? 'bg-red-600 text-white hover:bg-red-700'
-                      : 'btn-secondary'
+                      ? 'bg-red-600 text-white opacity-60 cursor-not-allowed'
+                      : 'btn-secondary hover:bg-red-50'
                   }`}
                 >
                   {responding ? (
@@ -261,7 +237,6 @@ export default function MemberMeetingDetail() {
               folders={documents.folders || []}
               documents={documents.documents || []}
               onPreview={handlePreview}
-              onDownload={handleDownload}
               readOnly={true}
             />
           </div>
@@ -359,7 +334,7 @@ export default function MemberMeetingDetail() {
         <DocumentPreview
           document={previewDoc}
           onClose={() => setPreviewDoc(null)}
-          onDownload={() => handleDownload(previewDoc)}
+          hideDownload={true}
         />
       )}
     </div>

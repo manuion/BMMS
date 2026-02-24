@@ -9,6 +9,7 @@ import {
   RefreshControl,
 } from 'react-native';
 import { format } from 'date-fns';
+import FileViewer from 'react-native-file-viewer';
 import offlineStorage from '../../services/offlineStorage';
 import { formatFileSize } from '../../utils/helpers';
 
@@ -74,8 +75,44 @@ export default function OfflineDocsScreen({ navigation }) {
     );
   };
 
-  const handleViewDocument = (doc) => {
-    Alert.alert('Document', `Would open: ${doc.fileName}`);
+  const handleViewDocument = async (doc) => {
+    if (!doc.localPath) {
+      Alert.alert('Error', 'Local file path not found');
+      return;
+    }
+
+    try {
+      await FileViewer.open(doc.localPath, {
+        showOpenWithDialog: true,
+        displayName: doc.fileName,
+      });
+    } catch (error) {
+      console.error('Failed to open file:', error);
+      Alert.alert(
+        'Cannot Open File',
+        'Unable to open this file type on your device. Try installing an app that supports this file format.'
+      );
+    }
+  };
+
+  const getFileIcon = (fileName) => {
+    const ext = fileName?.split('.').pop()?.toLowerCase();
+    if (['pdf'].includes(ext)) return 'PDF';
+    if (['doc', 'docx'].includes(ext)) return 'DOC';
+    if (['xls', 'xlsx'].includes(ext)) return 'XLS';
+    if (['ppt', 'pptx'].includes(ext)) return 'PPT';
+    if (['jpg', 'jpeg', 'png', 'gif'].includes(ext)) return 'IMG';
+    return 'FILE';
+  };
+
+  const getIconColor = (fileName) => {
+    const ext = fileName?.split('.').pop()?.toLowerCase();
+    if (['pdf'].includes(ext)) return '#ef4444';
+    if (['doc', 'docx'].includes(ext)) return '#2563eb';
+    if (['xls', 'xlsx'].includes(ext)) return '#22c55e';
+    if (['ppt', 'pptx'].includes(ext)) return '#f97316';
+    if (['jpg', 'jpeg', 'png', 'gif'].includes(ext)) return '#8b5cf6';
+    return '#6b7280';
   };
 
   const renderDocument = ({ item }) => (
@@ -83,8 +120,8 @@ export default function OfflineDocsScreen({ navigation }) {
       style={styles.documentCard}
       onPress={() => handleViewDocument(item)}
     >
-      <View style={styles.documentIcon}>
-        <Text style={styles.iconText}>PDF</Text>
+      <View style={[styles.documentIcon, { backgroundColor: getIconColor(item.fileName) }]}>
+        <Text style={styles.iconText}>{getFileIcon(item.fileName)}</Text>
       </View>
 
       <View style={styles.documentInfo}>
@@ -92,9 +129,14 @@ export default function OfflineDocsScreen({ navigation }) {
           {item.fileName}
         </Text>
         <Text style={styles.documentMeta}>
-          {formatFileSize(item.fileSize)} - Saved{' '}
+          {formatFileSize(item.fileSize)} • Saved{' '}
           {item.savedAt ? format(new Date(item.savedAt), 'MMM d, yyyy') : 'N/A'}
         </Text>
+        {item.downloadedAt && (
+          <Text style={styles.downloadedAt}>
+            Downloaded: {format(new Date(item.downloadedAt), 'h:mm a')}
+          </Text>
+        )}
       </View>
 
       <TouchableOpacity
@@ -110,11 +152,16 @@ export default function OfflineDocsScreen({ navigation }) {
     <View style={styles.container}>
       {/* Storage Info */}
       <View style={styles.storageInfo}>
-        <Text style={styles.storageText}>
-          {documents.length} documents - {formatFileSize(totalSize)} used
-        </Text>
+        <View>
+          <Text style={styles.storageText}>
+            {documents.length} document{documents.length !== 1 ? 's' : ''} saved
+          </Text>
+          <Text style={styles.storageSizeText}>
+            {formatFileSize(totalSize)} used
+          </Text>
+        </View>
         {documents.length > 0 && (
-          <TouchableOpacity onPress={handleClearAll}>
+          <TouchableOpacity onPress={handleClearAll} style={styles.clearButton}>
             <Text style={styles.clearText}>Clear All</Text>
           </TouchableOpacity>
         )}
@@ -137,10 +184,12 @@ export default function OfflineDocsScreen({ navigation }) {
         }
         ListEmptyComponent={
           <View style={styles.emptyState}>
-            <Text style={styles.emptyIcon}>No Docs</Text>
+            <Text style={styles.emptyIcon}>📥</Text>
             <Text style={styles.emptyTitle}>No Offline Documents</Text>
             <Text style={styles.emptyText}>
-              Documents you save for offline viewing will appear here
+              Documents you save for offline viewing will appear here.
+              {'\n\n'}
+              Open any document from a meeting and tap "Save for Offline" to access it without internet.
             </Text>
           </View>
         }
@@ -159,14 +208,26 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingVertical: 14,
     backgroundColor: '#fff',
     borderBottomWidth: 1,
     borderBottomColor: '#e5e7eb',
   },
   storageText: {
-    fontSize: 14,
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#1f2937',
+  },
+  storageSizeText: {
+    fontSize: 13,
     color: '#6b7280',
+    marginTop: 2,
+  },
+  clearButton: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    backgroundColor: '#fee2e2',
+    borderRadius: 6,
   },
   clearText: {
     fontSize: 14,
@@ -175,6 +236,7 @@ const styles = StyleSheet.create({
   },
   listContent: {
     padding: 16,
+    flexGrow: 1,
   },
   documentCard: {
     flexDirection: 'row',
@@ -190,24 +252,23 @@ const styles = StyleSheet.create({
     elevation: 2,
   },
   documentIcon: {
-    width: 44,
-    height: 44,
-    borderRadius: 8,
-    backgroundColor: '#e0e7ff',
+    width: 48,
+    height: 48,
+    borderRadius: 10,
     justifyContent: 'center',
     alignItems: 'center',
   },
   iconText: {
     fontSize: 12,
     fontWeight: 'bold',
-    color: '#4338ca',
+    color: '#fff',
   },
   documentInfo: {
     flex: 1,
-    marginLeft: 12,
+    marginLeft: 14,
   },
   documentName: {
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: '500',
     color: '#1f2937',
     marginBottom: 4,
@@ -216,10 +277,15 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#6b7280',
   },
+  downloadedAt: {
+    fontSize: 11,
+    color: '#9ca3af',
+    marginTop: 2,
+  },
   deleteButton: {
-    padding: 8,
+    padding: 10,
     backgroundColor: '#fee2e2',
-    borderRadius: 6,
+    borderRadius: 8,
   },
   deleteText: {
     fontSize: 14,
@@ -227,24 +293,26 @@ const styles = StyleSheet.create({
     color: '#ef4444',
   },
   emptyState: {
+    flex: 1,
     alignItems: 'center',
-    paddingVertical: 60,
+    justifyContent: 'center',
+    paddingVertical: 80,
+    paddingHorizontal: 32,
   },
   emptyIcon: {
-    fontSize: 18,
+    fontSize: 48,
     marginBottom: 16,
-    color: '#9ca3af',
   },
   emptyTitle: {
     fontSize: 18,
     fontWeight: '600',
     color: '#1f2937',
-    marginBottom: 8,
+    marginBottom: 12,
   },
   emptyText: {
     fontSize: 14,
     color: '#6b7280',
     textAlign: 'center',
-    paddingHorizontal: 32,
+    lineHeight: 22,
   },
 });

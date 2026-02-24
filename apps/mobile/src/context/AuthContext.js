@@ -5,6 +5,7 @@ import {
   registerForPushNotifications,
   unregisterPushNotifications,
 } from '../services/pushNotifications';
+import { syncMeetingsForOffline } from '../services/offlineSync';
 
 const AuthContext = createContext(null);
 
@@ -32,6 +33,9 @@ export function AuthProvider({ children }) {
 
           // Register for push notifications for returning user
           registerForPushNotifications().catch(console.error);
+
+          // Sync meetings for offline access (runs in background)
+          syncMeetingsForOffline().catch(console.error);
         } catch (error) {
           // Token invalid
           await AsyncStorage.multiRemove(['token', 'user']);
@@ -55,6 +59,9 @@ export function AuthProvider({ children }) {
 
     // Register for push notifications after login
     registerForPushNotifications().catch(console.error);
+
+    // Sync meetings for offline access (runs in background)
+    syncMeetingsForOffline().catch(console.error);
 
     return userData;
   };

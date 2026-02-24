@@ -50,7 +50,9 @@ export default function MemberMeetings() {
   };
 
   const getMyResponseStatus = (meeting) => {
-    const myResponse = meeting.responses?.find(r => r.userId === user?.id);
+    // API list endpoint returns only current user's response (filtered), so take first
+    // For detail endpoint, responses include userId so we also check that
+    const myResponse = meeting.responses?.[0] || meeting.responses?.find(r => r.userId === user?.id);
     return myResponse?.status || 'pending';
   };
 

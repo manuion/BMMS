@@ -9,14 +9,16 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import { format } from 'date-fns';
-import { meetingsApi, documentsApi } from '../../services/api';
+import { meetingsApi } from '../../services/api';
 import offlineStorage from '../../services/offlineStorage';
 import { useNetworkStatus } from '../../hooks/useNetworkStatus';
+import { useAuth } from '../../context/AuthContext';
 import DocumentTree from '../../components/DocumentTree';
 
 export default function MeetingDetailScreen({ route, navigation }) {
   const { meetingId } = route.params;
   const { isConnected } = useNetworkStatus();
+  const { user } = useAuth();
 
   const [meeting, setMeeting] = useState(null);
   const [folders, setFolders] = useState([]);
@@ -24,39 +26,84 @@ export default function MeetingDetailScreen({ route, navigation }) {
   const [loading, setLoading] = useState(true);
   const [responding, setResponding] = useState(false);
   const [offlineDocIds, setOfflineDocIds] = useState([]);
+  const [cachedAt, setCachedAt] = useState(null);
 
   useEffect(() => {
-    fetchMeeting();
-    fetchDocuments();
+    loadMeetingData();
     checkOfflineDocuments();
-  }, [meetingId]);
+  }, [meetingId, isConnected]);
 
-  const fetchMeeting = async () => {
+  const loadMeetingData = async () => {
+    setLoading(true);
+
+    if (isConnected) {
+      // Online: fetch from API and cache
+      await fetchMeetingFromApi();
+    } else {
+      // Offline: load from cache
+      await loadFromCache();
+    }
+
+    setLoading(false);
+  };
+
+  const fetchMeetingFromApi = async () => {
     try {
-      const res = await meetingsApi.getById(meetingId);
-      setMeeting(res.data);
+      // Fetch meeting details
+      const meetingRes = await meetingsApi.getById(meetingId);
+      setMeeting(meetingRes.data);
+
+      // Fetch documents
+      const docsRes = await documentsApi.getByMeeting(meetingId);
+      let foldersData = [];
+      let documentsData = [];
+
+      if (docsRes.data && docsRes.data.folders !== undefined) {
+        foldersData = docsRes.data.folders || [];
+        documentsData = docsRes.data.documents || [];
+      } else if (docsRes.data) {
+        documentsData = docsRes.data || [];
+      }
+
+      setFolders(foldersData);
+      setDocuments(documentsData);
+
+      // Cache for offline viewing
+      await offlineStorage.saveMeetingDetailOffline(
+        meetingId,
+        meetingRes.data,
+        foldersData,
+        documentsData
+      );
+      setCachedAt(new Date().toISOString());
     } catch (error) {
-      Alert.alert('Error', 'Failed to load meeting details');
-      navigation.goBack();
-    } finally {
-      setLoading(false);
+      console.error('Failed to fetch meeting:', error);
+      // Try loading from cache as fallback
+      await loadFromCache();
+      if (!meeting) {
+        Alert.alert('Error', 'Failed to load meeting details');
+        navigation.goBack();
+      }
     }
   };
 
-  const fetchDocuments = async () => {
+  const loadFromCache = async () => {
     try {
-      const res = await documentsApi.getByMeeting(meetingId);
-      // API returns { folders, documents }
-      if (res.data && res.data.folders !== undefined) {
-        setFolders(res.data.folders || []);
-        setDocuments(res.data.documents || []);
-      } else if (res.data) {
-        // Backwards compatibility
-        setDocuments(res.data || []);
-        setFolders([]);
+      const cached = await offlineStorage.getOfflineMeetingDetail(meetingId);
+      if (cached) {
+        setMeeting(cached.meeting);
+        setFolders(cached.folders || []);
+        setDocuments(cached.documents || []);
+        setCachedAt(cached.cachedAt);
+      } else {
+        Alert.alert(
+          'Not Available Offline',
+          'This meeting has not been cached. Please connect to the internet to view it.'
+        );
+        navigation.goBack();
       }
     } catch (error) {
-      console.error('Failed to fetch documents:', error);
+      console.error('Failed to load from cache:', error);
     }
   };
 
@@ -68,15 +115,18 @@ export default function MeetingDetailScreen({ route, navigation }) {
 
   const handleRespond = async (status) => {
     if (!isConnected) {
-      Alert.alert('Offline', 'You need to be online to respond to meetings');
+      Alert.alert(
+        'Offline Mode',
+        'You cannot accept or decline meetings while offline. Please connect to the internet to respond.'
+      );
       return;
     }
 
     setResponding(true);
     try {
       await meetingsApi.respond(meetingId, { status });
-      Alert.alert('Success', `You have ${status} the meeting`);
-      fetchMeeting();
+      // Refresh meeting data to update UI
+      await fetchMeetingFromApi();
     } catch (error) {
       Alert.alert('Error', 'Failed to respond to meeting');
     } finally {
@@ -84,43 +134,26 @@ export default function MeetingDetailScreen({ route, navigation }) {
     }
   };
 
-  const handleDownloadForOffline = async (doc) => {
-    if (!isConnected) {
-      Alert.alert('Offline', 'You need to be online to download documents');
+  // Handle document tap - navigate to document viewer
+  const handleViewDocument = (doc) => {
+    const isOffline = offlineDocIds.includes(doc.id);
+
+    // If offline and document not saved, show message
+    if (!isConnected && !isOffline) {
+      Alert.alert(
+        'Not Available Offline',
+        'This document is not saved for offline viewing. Save it while online to view offline.',
+        [{ text: 'OK' }]
+      );
       return;
     }
 
-    try {
-      const res = await documentsApi.getDownloadUrl(doc.id);
-      await offlineStorage.downloadDocument(doc, res.data.downloadUrl);
-      Alert.alert('Success', 'Document saved for offline viewing');
-      checkOfflineDocuments();
-    } catch (error) {
-      Alert.alert('Error', 'Failed to download document');
-    }
-  };
-
-  const handleViewDocument = async (doc) => {
-    const isOffline = offlineDocIds.includes(doc.id);
-
-    if (isOffline) {
-      const localPath = await offlineStorage.getOfflineDocumentPath(doc.id);
-      Alert.alert('Document', `Opening: ${doc.fileName}\n\nThis document is available offline.`);
-      // In a full implementation, you would open the document viewer here
-    } else if (isConnected) {
-      try {
-        const res = await documentsApi.getDownloadUrl(doc.id);
-        Alert.alert('Document', `Opening: ${doc.fileName}\n\nStreaming from server...`);
-        // In a full implementation, you would open the document viewer here
-      } catch (error) {
-        Alert.alert('Error', 'Failed to get document URL');
-      }
-    } else {
-      Alert.alert(
-        'Offline',
-        'This document is not available offline. Save it first while online.'
-      );
-    }
+    // Navigate to document viewer screen
+    navigation.navigate('DocumentViewer', {
+      document: doc,
+      isOffline: isOffline,
+      meetingId: meetingId,
+    });
   };
 
   if (loading) {
@@ -133,7 +166,8 @@ export default function MeetingDetailScreen({ route, navigation }) {
 
   if (!meeting) return null;
 
-  const currentResponse = meeting.responses?.find((r) => true);
+  // Find current user's response from the responses array
+  const currentResponse = meeting.responses?.find((r) => r.userId === user?.id || r.user?.id === user?.id);
   const currentStatus = currentResponse?.status || 'pending';
 
   // Filter to only completed uploads
@@ -143,6 +177,20 @@ export default function MeetingDetailScreen({ route, navigation }) {
 
   return (
     <ScrollView style={styles.container}>
+      {/* Offline Banner */}
+      {!isConnected && (
+        <View style={styles.offlineBanner}>
+          <Text style={styles.offlineBannerText}>
+            Offline Mode - View Only
+            {cachedAt && (
+              <Text style={styles.cachedTime}>
+                {'\n'}Last synced: {format(new Date(cachedAt), 'PPp')}
+              </Text>
+            )}
+          </Text>
+        </View>
+      )}
+
       {/* Header */}
       <View style={styles.header}>
         <Text style={styles.title}>{meeting.title}</Text>
@@ -225,31 +273,44 @@ export default function MeetingDetailScreen({ route, navigation }) {
           </Text>
         </View>
 
+        {/* Response Buttons - Disabled when offline or already selected */}
         <View style={styles.responseButtons}>
           <TouchableOpacity
             style={[
               styles.responseButton,
               styles.acceptButton,
-              currentStatus === 'accepted' && styles.buttonSelected,
+              currentStatus === 'accepted' && styles.acceptedSelected,
+              (currentStatus === 'accepted' || !isConnected) && styles.buttonDisabledStyle,
             ]}
             onPress={() => handleRespond('accepted')}
-            disabled={responding || currentStatus === 'accepted'}
+            disabled={responding || currentStatus === 'accepted' || !isConnected}
           >
-            <Text style={styles.responseButtonText}>Accept</Text>
+            <Text style={styles.responseButtonText}>
+              {currentStatus === 'accepted' ? '✓ Accept' : 'Accept'}
+            </Text>
           </TouchableOpacity>
 
           <TouchableOpacity
             style={[
               styles.responseButton,
               styles.declineButton,
-              currentStatus === 'declined' && styles.buttonSelected,
+              currentStatus === 'declined' && styles.declinedSelected,
+              (currentStatus === 'declined' || !isConnected) && styles.buttonDisabledStyle,
             ]}
             onPress={() => handleRespond('declined')}
-            disabled={responding || currentStatus === 'declined'}
+            disabled={responding || currentStatus === 'declined' || !isConnected}
           >
-            <Text style={styles.responseButtonText}>Decline</Text>
+            <Text style={styles.responseButtonText}>
+              {currentStatus === 'declined' ? '✕ Decline' : 'Decline'}
+            </Text>
           </TouchableOpacity>
         </View>
+
+        {!isConnected && (
+          <Text style={styles.offlineNote}>
+            Connect to the internet to accept or decline this meeting
+          </Text>
+        )}
       </View>
 
       {/* Documents with Tree Structure */}
@@ -262,8 +323,8 @@ export default function MeetingDetailScreen({ route, navigation }) {
           folders={folders}
           documents={completedDocs}
           onViewDocument={handleViewDocument}
-          onDownloadOffline={handleDownloadForOffline}
           offlineDocIds={offlineDocIds}
+          isConnected={isConnected}
         />
       </View>
 
@@ -281,6 +342,24 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  offlineBanner: {
+    backgroundColor: '#fef3c7',
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#fde68a',
+  },
+  offlineBannerText: {
+    color: '#92400e',
+    fontSize: 14,
+    fontWeight: '600',
+    textAlign: 'center',
+  },
+  cachedTime: {
+    fontSize: 11,
+    fontWeight: '400',
+    color: '#b45309',
   },
   header: {
     backgroundColor: '#fff',
@@ -355,13 +434,32 @@ const styles = StyleSheet.create({
   declineButton: {
     backgroundColor: '#ef4444',
   },
-  buttonSelected: {
+  acceptedSelected: {
+    backgroundColor: '#16a34a',
+  },
+  declinedSelected: {
+    backgroundColor: '#dc2626',
+  },
+  buttonDisabledStyle: {
     opacity: 0.6,
+  },
+  buttonDisabled: {
+    backgroundColor: '#d1d5db',
   },
   responseButtonText: {
     color: '#fff',
     fontSize: 16,
     fontWeight: '600',
+  },
+  buttonTextDisabled: {
+    color: '#9ca3af',
+  },
+  offlineNote: {
+    marginTop: 12,
+    fontSize: 12,
+    color: '#6b7280',
+    textAlign: 'center',
+    fontStyle: 'italic',
   },
   bottomPadding: {
     height: 40,

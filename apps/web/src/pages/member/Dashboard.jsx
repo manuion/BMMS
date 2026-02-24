@@ -53,7 +53,8 @@ export default function MemberDashboard() {
       );
 
       const myResponses = memberMeetings.map(m => {
-        const myResponse = m.responses?.find(r => r.userId === user?.id);
+        // API list endpoint returns only current user's response (filtered), so take first
+        const myResponse = m.responses?.[0] || m.responses?.find(r => r.userId === user?.id);
         return myResponse?.status || 'pending';
       });
 
@@ -71,7 +72,8 @@ export default function MemberDashboard() {
   };
 
   const getMyResponseStatus = (meeting) => {
-    const myResponse = meeting.responses?.find(r => r.userId === user?.id);
+    // API list endpoint returns only current user's response (filtered), so take first
+    const myResponse = meeting.responses?.[0] || meeting.responses?.find(r => r.userId === user?.id);
     return myResponse?.status || 'pending';
   };
 

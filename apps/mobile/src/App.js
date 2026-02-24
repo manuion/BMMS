@@ -1,8 +1,9 @@
 import React, { useEffect, useRef } from 'react';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
-import { Alert } from 'react-native';
+import { Alert, View, StyleSheet } from 'react-native';
 import { AuthProvider } from './context/AuthContext';
 import AppNavigator from './navigation/AppNavigator';
+import OfflineBanner from './components/OfflineBanner';
 import {
   setupNotificationHandlers,
   parseNotificationData,
@@ -69,8 +70,17 @@ export default function App() {
   return (
     <SafeAreaProvider>
       <AuthProvider>
-        <AppNavigator navigationRef={navigationRef} />
+        <View style={styles.container}>
+          <AppNavigator navigationRef={navigationRef} />
+          <OfflineBanner />
+        </View>
       </AuthProvider>
     </SafeAreaProvider>
   );
 }
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+  },
+});
